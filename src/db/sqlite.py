@@ -5,7 +5,7 @@ Uses async SQLAlchemy for non-blocking operations.
 
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncGenerator
+from typing import Optional, Dict, Tuple, AsyncGenerator
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -16,8 +16,8 @@ from src.db.models import Base
 class Database:
     """Async database manager."""
 
-    def __init__(self, url: str | None = None):
-        self.url = url or settings.database_url
+    def __init__(self, url: Optional[str] = None):
+        self.url = url or settings.db_url
         self._engine = None
         self._session_factory = None
 
@@ -25,7 +25,9 @@ class Database:
         """Initialize database engine and create tables."""
         # Ensure data directory exists
         if "sqlite" in self.url:
-            db_path = Path(self.url.replace("sqlite+aiosqlite:///", ""))
+            # Extract path from URL: sqlite+aiosqlite:///C:/path/to/db.db or sqlite+aiosqlite:///path/to/db.db
+            path_part = self.url.split("///", 1)[-1]
+            db_path = Path(path_part)
             db_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._engine = create_async_engine(

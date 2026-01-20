@@ -4,7 +4,7 @@ Loads settings from environment variables with validation.
 """
 
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -20,8 +20,8 @@ class Settings(BaseSettings):
     )
 
     # Paths
-    base_dir: Path = Path(__file__).parent.parent.parent
-    data_dir: Path = Field(default=None)
+    base_dir: Path = Path(__file__).parent.parent
+    data_dir: Path = Path(__file__).parent.parent / "data"
 
     # Telegram
     telegram_bot_token: str = Field(..., description="Telegram Bot API token")
@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     )
 
     # GigaChat
-    gigachat_credentials: str | None = Field(
+    gigachat_credentials: Optional[str] = Field(
         default=None, description="GigaChat API credentials"
     )
     gigachat_scope: str = Field(
@@ -40,8 +40,8 @@ class Settings(BaseSettings):
     )
 
     # YandexGPT
-    yandex_api_key: str | None = Field(default=None, description="Yandex API key")
-    yandex_folder_id: str | None = Field(default=None, description="Yandex folder ID")
+    yandex_api_key: Optional[str] = Field(default=None, description="Yandex API key")
+    yandex_folder_id: Optional[str] = Field(default=None, description="Yandex folder ID")
 
     # Qdrant
     qdrant_host: str = Field(default="localhost", description="Qdrant host")
@@ -51,10 +51,17 @@ class Settings(BaseSettings):
     )
 
     # Database
-    database_url: str = Field(
-        default="sqlite+aiosqlite:///data/vitaprod.db",
+    database_url: Optional[str] = Field(
+        default=None,
         description="Database connection URL",
     )
+    
+    @property
+    def db_url(self) -> str:
+        """Get database URL with absolute path."""
+        if self.database_url:
+            return self.database_url
+        return f"sqlite+aiosqlite:///{self.data_dir / 'vitaprod.db'}"
 
     # Escalation contacts
     escalation_phone: str = Field(
@@ -86,11 +93,6 @@ class Settings(BaseSettings):
 
     # Debug
     debug: bool = Field(default=False, description="Debug mode")
-
-    def model_post_init(self, __context) -> None:
-        """Set derived paths after initialization."""
-        if self.data_dir is None:
-            self.data_dir = self.base_dir / "data"
 
     @property
     def prices_dir(self) -> Path:
