@@ -166,13 +166,3 @@ black src/
 ruff check src/ --fix
 ```
 
-## Контакты
-
-- **Телефон:** +7 912 828-18-38
-- **WhatsApp/Viber:** +7 912 828-18-38
-- **Email:** vitaprod43@mail.ru
-- **Адрес:** г. Киров, пер. Энгельса, 2
-
-## Лицензия
-
-MIT License
