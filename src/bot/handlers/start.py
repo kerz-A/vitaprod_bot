@@ -102,19 +102,31 @@ async def show_catalog(message: Message) -> None:
             with_payload=True,
         )[0]
         
-        # Группируем по категориям
+        # Группируем по категориям и форме
         categories = {}
         for point in all_points:
             payload = point.payload
             if payload.get("is_available", False):
                 category = payload.get("category", "Другое")
-                if category not in categories:
-                    categories[category] = []
+                product_form = payload.get("product_form", "")
+                
+                # Создаём ключ "Категория (форма)"
+                if product_form:
+                    group_key = f"{category} ({product_form.lower()})"
+                else:
+                    group_key = category
+                
+                if group_key not in categories:
+                    categories[group_key] = []
                 
                 name = payload.get("name", "")
                 price = payload.get("price")
-                price_str = f"{price} ₽/кг" if price else "цена уточняется"
-                categories[category].append(f"• {name} — {price_str}")
+                origin = payload.get("origin_country", "")
+                
+                # Формируем строку товара
+                name_with_origin = f"{name} ({origin})" if origin else name
+                price_str = f"{price:.0f} ₽/кг" if price else "цена уточняется"
+                categories[group_key].append(f"• {name_with_origin} — {price_str}")
         
         if not categories:
             await message.answer("😔 К сожалению, сейчас нет товаров в наличии.")

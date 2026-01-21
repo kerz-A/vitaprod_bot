@@ -176,8 +176,8 @@ class PriceLoader:
         # Prepare data for embedding
         texts = []
         for p in products:
-            # Create searchable text
-            text = f"{p.name} {p.category}"
+            # Create searchable text including category and form
+            text = f"{p.name} {p.category} {p.product_form}"
             if p.origin_country:
                 text += f" {p.origin_country}"
             texts.append(text)
@@ -190,6 +190,7 @@ class PriceLoader:
             {
                 "name": p.name,
                 "category": p.category,
+                "product_form": p.product_form,
                 "price": p.price,
                 "is_available": p.is_available,
                 "origin_country": p.origin_country,
@@ -198,7 +199,7 @@ class PriceLoader:
         ]
 
         # Use product names as IDs (hash for uniqueness)
-        ids = [hash(f"{p.name}_{p.category}") % (2**31) for p in products]
+        ids = [hash(f"{p.name}_{p.category}_{p.product_form}") % (2**31) for p in products]
 
         # Initialize collection if needed
         await vector_db.init_collection()
