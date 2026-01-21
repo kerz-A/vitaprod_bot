@@ -15,9 +15,9 @@ class VectorDB:
 
     def __init__(
         self,
-        host: str | None = None,
-        port: int | None = None,
-        collection_name: str | None = None,
+        host: Optional[str] = None,
+        port: Optional[int] = None,
+        collection_name: Optional[str] = None,
     ):
         self.host = host or settings.qdrant_host
         self.port = port or settings.qdrant_port
@@ -33,7 +33,7 @@ class VectorDB:
 
     async def init_collection(
         self,
-        vector_size: int | None = None,
+        vector_size: Optional[int] = None,
         recreate: bool = False,
     ) -> None:
         """Initialize collection for product embeddings."""
@@ -85,9 +85,9 @@ class VectorDB:
     def search(
         self,
         query_vector: list[float],
-        limit: int | None = None,
-        filter_available: bool | None = None,
-        category: str | None = None,
+        limit: Optional[int] = None,
+        filter_available: Optional[bool] = None,
+        category: Optional[str] = None,
     ) -> list[dict]:
         """
         Search for similar products.
@@ -122,12 +122,12 @@ class VectorDB:
 
         query_filter = models.Filter(must=conditions) if conditions else None
 
-        results = self.client.search(
+        results = self.client.query_points(
             collection_name=self.collection_name,
-            query_vector=query_vector,
+            query=query_vector,
             limit=limit,
             query_filter=query_filter,
-        )
+        ).points
 
         return [
             {

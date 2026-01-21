@@ -9,11 +9,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
+from src.data.embeddings import EmbeddingService  # Must be before parsers (torch DLL loading order)
 from src.data.parsers import ParsedPriceList, ParsedProduct, parse_file
 from src.db.models import Category, PriceHistory, PriceList, Product
 from src.db.sqlite import db
 from src.db.vector import vector_db
-from src.data.embeddings import EmbeddingService
+from typing import Optional, Dict, Tuple
 
 
 class PriceLoader:
@@ -25,7 +26,7 @@ class PriceLoader:
     async def load_file(
         self,
         file_path: str | Path,
-        price_reasons: dict[str, str] | None = None,
+        price_reasons: Optional[Dict[str, str]] = None,
     ) -> dict:
         """
         Load price list from file into database.
@@ -92,7 +93,7 @@ class PriceLoader:
         session: AsyncSession,
         parsed_product: ParsedProduct,
         price_date: datetime,
-        price_reason: str | None,
+        price_reason: Optional[str],
     ) -> dict:
         """Process single product - create or update in database."""
         result = {
@@ -208,7 +209,7 @@ class PriceLoader:
 
 async def load_price_list(
     file_path: str | Path,
-    price_reasons: dict[str, str] | None = None,
+    price_reasons: Optional[Dict[str, str]] = None,
 ) -> dict:
     """Convenience function to load a price list."""
     loader = PriceLoader()
