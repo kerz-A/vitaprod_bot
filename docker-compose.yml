@@ -11,16 +11,15 @@ services:
       - QDRANT__LOG_LEVEL=INFO
     restart: unless-stopped
 
-  # PostgreSQL (uncomment when ready to migrate from SQLite)
-  # postgres:
-  #   image: postgres:16-alpine
-  #   container_name: vitaprod_postgres
-  #   ports:
-  #     - "5432:5432"
-  #   environment:
-  #     POSTGRES_USER: vitaprod
-  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vitaprod_secret}
-  #     POSTGRES_DB: vitaprod
-  #   volumes:
-  #     - ./postgres_data:/var/lib/postgresql/data
-  #   restart: unless-stopped
+  postgres:
+    image: postgres:16-alpine
+    container_name: vitaprod_postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: vitaprod
+      POSTGRES_PASSWORD: vitaprod_secret
+      POSTGRES_DB: vitaprod
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped

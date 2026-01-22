@@ -56,6 +56,23 @@ class Settings(BaseSettings):
         description="Database connection URL",
     )
     
+    # PostgreSQL for LangGraph conversations
+    postgres_host: str = Field(default="localhost", description="PostgreSQL host")
+    postgres_port: int = Field(default=5432, description="PostgreSQL port")
+    postgres_user: str = Field(default="vitaprod", description="PostgreSQL user")
+    postgres_password: str = Field(default="vitaprod_secret", description="PostgreSQL password")
+    postgres_db: str = Field(default="vitaprod", description="PostgreSQL database")
+    
+    @property
+    def postgres_url(self) -> str:
+        """Get PostgreSQL connection URL for LangGraph."""
+        return f"postgresql://{self.postgres_user}:{self.postgres_password}@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+    
+    @property
+    def async_postgres_url(self) -> str:
+        """Get async PostgreSQL connection URL."""
+        return f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+    
     @property
     def db_url(self) -> str:
         """Get database URL with absolute path."""

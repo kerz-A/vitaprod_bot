@@ -6,6 +6,8 @@ from aiogram import Router
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 
+from src.core.graph import clear_conversation
+
 router = Router(name="start")
 
 
@@ -157,3 +159,16 @@ async def show_price_help(message: Message) -> None:
 async def show_contacts(message: Message) -> None:
     """Show contact information."""
     await message.answer(CONTACT_MESSAGE)
+
+
+@router.message(Command("clear"))
+async def handle_clear(message: Message) -> None:
+    """Clear conversation history."""
+    user_id = message.from_user.id
+    await clear_conversation(user_id)
+    await message.answer(
+        "🔄 История диалога очищена. Начнём сначала!\n\n"
+        "Чем могу помочь?",
+        reply_markup=main_keyboard
+    )
+

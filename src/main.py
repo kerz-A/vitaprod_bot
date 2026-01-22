@@ -4,12 +4,18 @@ VitaProd Telegram Bot - Main entry point.
 
 import asyncio
 import logging
+import sys
 
 from src.bot.bot import get_bot, get_dispatcher
 from src.bot.handlers import register_handlers
 from src.db.sqlite import db
 from src.db.vector import vector_db
 from src.config import settings
+
+
+# Fix for Windows asyncio
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
 # Configure logging
