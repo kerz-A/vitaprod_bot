@@ -10,37 +10,15 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
 from src.core.graph.state import ConversationState
 from src.core.rag.retriever import get_retriever
-from src.core.rag.prompts import build_system_prompt, format_product_context
+from src.core.prompts import (
+    build_system_prompt,
+    build_user_prompt,
+    format_products_context,
+    format_conversation_history,
+)
 from src.integrations.llm import get_default_llm
 
 logger = logging.getLogger(__name__)
-
-
-# System prompt with conversation context instructions
-SYSTEM_PROMPT_WITH_MEMORY = """Ты — вежливый и профессиональный консультант компании ВитаПрод, специализирующейся на продаже замороженных ягод, овощей, фруктов и грибов оптом.
-
-Твоя задача — помогать клиентам с информацией о товарах, ценах и наличии.
-
-ВАЖНО - КОНТЕКСТ ДИАЛОГА:
-- Ты ведёшь непрерывный диалог с клиентом
-- Помни о чём говорили раньше в этом диалоге
-- Если клиент спрашивает "а этот?", "в каком виде?", "а цена?" — он имеет в виду товары, которые обсуждались ранее
-- Используй историю диалога для понимания контекста
-
-Правила ответов:
-1. Отвечай только на основе предоставленной информации о товарах
-2. Если товар есть в наличии — называй точную цену за 1 кг
-3. Если товара нет в наличии — так и скажи
-4. Если спрашивают о форме товара (замороженный/сушёный) — обязательно укажи эту информацию
-5. Будь краток, но информативен
-6. Используй дружелюбный, но профессиональный тон
-
-Контакты для связи с менеджером:
-- Телефон: +7 912 828-18-38
-- WhatsApp/Viber: +7 912 828-18-38
-- Email: vitaprod43@mail.ru
-
-Адрес: город Киров, переулок Энгельса, 2"""
 
 
 async def retrieve_products(state: ConversationState) -> dict:
@@ -85,35 +63,32 @@ async def generate_response(state: ConversationState) -> dict:
     products = state.get("current_products", [])
     
     if not messages:
-        return {"messages": [AIMessage(content="Здравствуйте! Чем могу помочь?")]}
+        return {"messages": [AIMessage(content="Здравствуйте! С вами консультант компании ВитаПрод — Себастьян Перейра. Чем могу помочь?")]}
     
     # Build prompt with conversation history and products
     llm = get_default_llm()
     
-    # Format conversation history for the prompt
-    conversation_history = _format_conversation_history(messages[:-1])  # Exclude last message
+    # Format conversation history (exclude last message - it's the current query)
+    history = format_conversation_history(messages[:-1])
     
-    # Format current products context
-    products_context = format_product_context(products) if products else "Товары не найдены по запросу."
+    # Format products context
+    products_context = format_products_context(products)
     
     # Get last user message
     last_message = messages[-1].content if messages else ""
     
-    # Build the prompt
-    user_prompt = f"""История диалога:
-{conversation_history}
-
-Информация о найденных товарах:
-{products_context}
-
-Текущий вопрос клиента: {last_message}
-
-Ответь на вопрос клиента, учитывая историю диалога и информацию о товарах."""
+    # Build prompts using new prompt module
+    system_prompt = build_system_prompt()
+    user_prompt = build_user_prompt(
+        conversation_history=history,
+        products_context=products_context,
+        user_query=last_message,
+    )
 
     try:
         response = await llm.generate(
             prompt=user_prompt,
-            system_prompt=SYSTEM_PROMPT_WITH_MEMORY,
+            system_prompt=system_prompt,
             temperature=0.3,
             max_tokens=512,
         )
@@ -178,24 +153,3 @@ def _build_context_query(messages: list, current_query: str) -> str:
         return enriched_query
     
     return current_query
-
-
-def _format_conversation_history(messages: list, max_messages: int = 10) -> str:
-    """
-    Format conversation history for the prompt.
-    Limits to last N messages to fit context window.
-    """
-    if not messages:
-        return "Это начало диалога."
-    
-    # Take last N messages
-    recent_messages = messages[-max_messages:]
-    
-    lines = []
-    for msg in recent_messages:
-        if isinstance(msg, HumanMessage):
-            lines.append(f"Клиент: {msg.content}")
-        elif isinstance(msg, AIMessage):
-            lines.append(f"Консультант: {msg.content}")
-    
-    return "\n".join(lines) if lines else "Это начало диалога."
