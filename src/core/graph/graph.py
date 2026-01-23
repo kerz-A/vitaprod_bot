@@ -7,7 +7,7 @@ import logging
 from typing import Optional
 
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langchain_core.messages import HumanMessage
 
 from src.core.graph.state import ConversationState
@@ -41,32 +41,57 @@ def create_graph() -> StateGraph:
 # Compiled graph singleton
 _compiled_graph = None
 _checkpointer = None
+_initialized = False
 
 
-def get_conversation_graph():
+async def init_checkpointer():
+    """Initialize the async PostgreSQL checkpointer."""
+    global _checkpointer, _initialized
+    
+    if _initialized:
+        return _checkpointer
+    
+    import psycopg
+    
+    conn_string = settings.postgres_url
+    
+    # Setup tables with sync connection (required for CREATE INDEX CONCURRENTLY)
+    logger.info("Setting up PostgreSQL checkpointer tables...")
+    with psycopg.connect(conn_string, autocommit=True) as setup_conn:
+        from langgraph.checkpoint.postgres import PostgresSaver
+        sync_checkpointer = PostgresSaver(setup_conn)
+        sync_checkpointer.setup()
+    
+    # Create async checkpointer
+    import psycopg_pool
+    
+    pool = psycopg_pool.AsyncConnectionPool(
+        conninfo=conn_string,
+        min_size=1,
+        max_size=5,
+    )
+    await pool.open()
+    
+    _checkpointer = AsyncPostgresSaver(pool)
+    _initialized = True
+    
+    logger.info("AsyncPostgresSaver initialized successfully")
+    return _checkpointer
+
+
+async def get_conversation_graph():
     """
     Get compiled conversation graph with PostgreSQL checkpointer (singleton).
     """
-    global _compiled_graph, _checkpointer
+    global _compiled_graph
     
     if _compiled_graph is None:
         logger.info("Initializing LangGraph conversation graph with PostgreSQL...")
         
         graph = create_graph()
+        checkpointer = await init_checkpointer()
         
-        # Create PostgreSQL checkpointer
-        import psycopg
-        
-        conn_string = settings.postgres_url
-        
-        # Create connection and checkpointer
-        connection = psycopg.connect(conn_string)
-        _checkpointer = PostgresSaver(connection)
-        
-        # Setup tables if needed
-        _checkpointer.setup()
-        
-        _compiled_graph = graph.compile(checkpointer=_checkpointer)
+        _compiled_graph = graph.compile(checkpointer=checkpointer)
         
         logger.info("LangGraph graph compiled successfully with PostgreSQL")
     
@@ -89,7 +114,7 @@ async def chat(
     Returns:
         Assistant's response text
     """
-    graph = get_conversation_graph()
+    graph = await get_conversation_graph()
     
     # Thread ID = user ID for per-user conversation memory
     thread_id = str(user_id)
@@ -111,8 +136,8 @@ async def chat(
     }
     
     try:
-        # Invoke graph (sync, as psycopg connection is sync)
-        result = graph.invoke(input_state, config=config)
+        # Invoke graph asynchronously
+        result = await graph.ainvoke(input_state, config=config)
         
         # Extract last AI message
         messages = result.get("messages", [])
@@ -137,13 +162,13 @@ async def get_conversation_history(user_id: int) -> list[dict]:
     Returns:
         List of messages with 'role' and 'content'
     """
-    graph = get_conversation_graph()
+    graph = await get_conversation_graph()
     
     thread_id = str(user_id)
     config = {"configurable": {"thread_id": thread_id}}
     
     try:
-        state = graph.get_state(config)
+        state = await graph.aget_state(config)
         messages = state.values.get("messages", [])
         
         history = []

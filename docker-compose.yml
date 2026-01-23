@@ -15,11 +15,17 @@ services:
     image: postgres:16-alpine
     container_name: vitaprod_postgres
     ports:
-      - "5432:5432"
+      - "5433:5432"
     environment:
       POSTGRES_USER: vitaprod
       POSTGRES_PASSWORD: vitaprod_secret
       POSTGRES_DB: vitaprod
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
     volumes:
-      - ./postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
+
+volumes:
+  postgres_data:
