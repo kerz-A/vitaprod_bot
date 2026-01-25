@@ -90,6 +90,11 @@ class Settings(BaseSettings):
     escalation_email: str = Field(
         default="vitaprod43@mail.ru", description="Email for escalation"
     )
+    
+    # Manager notification
+    manager_telegram_id: Optional[int] = Field(
+        default=None, description="Telegram ID of manager to receive orders"
+    )
 
     # Embeddings
     embedding_model: str = Field(

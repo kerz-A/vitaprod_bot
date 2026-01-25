@@ -6,22 +6,33 @@ import logging
 
 from aiogram import Router, F
 from aiogram.types import Message
+from aiogram.fsm.context import FSMContext
 
 from src.core.graph import chat
+from src.core.orders.states import OrderStates
+from src.core.orders.intent import detect_order_intent, format_order_suggestion, quick_order_check
+from src.bot.keyboards.order import get_start_order_keyboard
 
 router = Router(name="price_query")
 logger = logging.getLogger(__name__)
 
 
 @router.message(F.text)
-async def handle_message(message: Message) -> None:
+async def handle_message(message: Message, state: FSMContext) -> None:
     """
     Handle user messages using LangGraph conversation flow.
     Maintains conversation memory per user.
+    Detects order intent and starts order flow when appropriate.
     """
     user_query = message.text.strip()
 
     if not user_query:
+        return
+    
+    # Check if user is in order FSM state - skip regular processing
+    current_state = await state.get_state()
+    if current_state and current_state.startswith("OrderStates:"):
+        # Let order handlers process this
         return
 
     # Get user info
@@ -35,7 +46,37 @@ async def handle_message(message: Message) -> None:
     )
 
     try:
-        # Process through LangGraph (with memory)
+        # Check for order intent (quick check first)
+        if quick_order_check(user_query):
+            # Get conversation context for intent detection
+            from src.core.graph import get_conversation_history
+            from src.core.rag.retriever import get_retriever
+            
+            history = await get_conversation_history(user_id)
+            context = "\n".join([
+                f"{'Клиент' if h['role'] == 'user' else 'Бот'}: {h['content']}" 
+                for h in history[-6:]
+            ])
+            
+            # Get relevant products (NOT async!)
+            retriever = get_retriever()
+            result = await retriever.search(user_query, top_k=10)
+            products = [p.model_dump() for p in result.products] if result.products else []
+            
+            # Detect order intent
+            intent = await detect_order_intent(
+                user_message=user_query,
+                conversation_context=context,
+                available_products=products,
+            )
+            
+            if intent.is_order and intent.items and intent.confidence >= 0.7:
+                # Start order flow
+                from src.bot.handlers.order import start_order_from_cart
+                await start_order_from_cart(message, state, intent.items)
+                return
+
+        # Regular conversation processing through LangGraph
         response = await chat(
             user_id=user_id,
             message=user_query,
