@@ -633,6 +633,89 @@ async def handle_use_saved_name(callback: CallbackQuery, state: FSMContext) -> N
     await proceed_to_phone(callback.message, state, order, is_callback=True)
 
 
+@router.callback_query(F.data == "order:enter_new:name")
+async def handle_enter_new_name(callback: CallbackQuery, state: FSMContext) -> None:
+    """Enter new name instead of saved."""
+    await callback.answer()
+    await state.set_state(OrderStates.entering_name)
+    await callback.message.edit_text(
+        f"{format_order_progress(3)}\n\n"
+        "👤 <b>Контактные данные</b>\n\n"
+        "Введите ваше имя:"
+    )
+
+
+@router.callback_query(F.data == "order:use_saved:phone")
+async def handle_use_saved_phone(callback: CallbackQuery, state: FSMContext) -> None:
+    """Use saved phone."""
+    await callback.answer()
+    data = await state.get_data()
+    saved_phone = data.get("saved_phone")
+    
+    if saved_phone:
+        order = await get_or_create_order(state)
+        order.customer.phone = saved_phone
+        await save_order_to_state(state, order)
+    
+    await state.set_state(OrderStates.entering_company)
+    
+    text = (
+        f"{format_order_progress(3)}\n\n"
+        "🏢 <b>Компания</b> (необязательно)\n\n"
+        "Введите название компании или нажмите 'Пропустить':"
+    )
+    
+    await callback.message.edit_text(text, reply_markup=get_skip_keyboard("company"))
+
+
+@router.callback_query(F.data == "order:enter_new:phone")
+async def handle_enter_new_phone(callback: CallbackQuery, state: FSMContext) -> None:
+    """Enter new phone instead of saved."""
+    await callback.answer()
+    await state.set_state(OrderStates.entering_phone)
+    await callback.message.edit_text(
+        f"{format_order_progress(3)}\n\n"
+        "📞 <b>Контактный телефон</b>\n\n"
+        "Введите номер телефона:"
+    )
+
+
+@router.callback_query(F.data == "order:use_saved:address")
+async def handle_use_saved_address(callback: CallbackQuery, state: FSMContext) -> None:
+    """Use saved address."""
+    await callback.answer()
+    data = await state.get_data()
+    saved_address = data.get("saved_address")
+    
+    if saved_address:
+        order = await get_or_create_order(state)
+        order.delivery.address = saved_address
+        await save_order_to_state(state, order)
+    
+    await state.set_state(OrderStates.entering_date)
+    
+    text = (
+        f"{format_order_progress(2)}\n\n"
+        f"✅ Адрес: {saved_address}\n\n"
+        "📅 Выберите желаемую дату доставки:"
+    )
+    
+    await callback.message.edit_text(text, reply_markup=get_date_quick_keyboard())
+
+
+@router.callback_query(F.data == "order:enter_new:address")
+async def handle_enter_new_address(callback: CallbackQuery, state: FSMContext) -> None:
+    """Enter new address instead of saved."""
+    await callback.answer()
+    await state.set_state(OrderStates.entering_address)
+    await callback.message.edit_text(
+        f"{format_order_progress(2)}\n\n"
+        "📍 <b>Адрес доставки</b>\n\n"
+        "Введите полный адрес:\n"
+        "(город, улица, дом, офис/квартира)"
+    )
+
+
 @router.message(OrderStates.entering_name)
 async def handle_name_input(message: Message, state: FSMContext) -> None:
     """Handle name input."""
@@ -792,13 +875,18 @@ async def handle_order_submit(callback: CallbackQuery, state: FSMContext) -> Non
     
     # Export to XLSX
     xlsx_path = order_exporter.export(order)
+    logger.info(f"Order {order.id} exported to {xlsx_path}")
     
     # Send to manager
-    try:
-        manager_id = settings.manager_telegram_id
-        if manager_id:
+    manager_id = settings.manager_telegram_id
+    logger.info(f"Manager ID from settings: {manager_id}")
+    
+    if manager_id:
+        try:
             from src.bot.bot import get_bot
             bot = get_bot()
+            
+            logger.info(f"Sending order {order.id} to manager {manager_id}...")
             
             # Send text notification
             await bot.send_message(
@@ -807,7 +895,9 @@ async def handle_order_submit(callback: CallbackQuery, state: FSMContext) -> Non
                     f"🔔 <b>Новая заявка {order.order_number}</b>\n\n"
                     f"{order.format_full_summary()}"
                 ),
+                parse_mode="HTML",
             )
+            logger.info(f"Text notification sent to {manager_id}")
             
             # Send XLSX file
             await bot.send_document(
@@ -815,11 +905,15 @@ async def handle_order_submit(callback: CallbackQuery, state: FSMContext) -> Non
                 document=FSInputFile(xlsx_path),
                 caption=f"📎 Заявка {order.order_number} в формате Excel"
             )
+            logger.info(f"XLSX file sent to {manager_id}")
             
             order.manager_notified = True
-            logger.info(f"Order {order.id} sent to manager {manager_id}")
-    except Exception as e:
-        logger.error(f"Failed to notify manager: {e}", exc_info=True)
+            logger.info(f"Order {order.id} successfully sent to manager {manager_id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to notify manager {manager_id}: {e}", exc_info=True)
+    else:
+        logger.warning("MANAGER_TELEGRAM_ID not set in .env!")
     
     # Save customer data for future autofill
     await save_customer_data(order.customer)
@@ -911,3 +1005,145 @@ async def handle_back_to_date(callback: CallbackQuery, state: FSMContext) -> Non
         )
     
     await callback.message.edit_text(text, reply_markup=get_date_quick_keyboard())
+
+
+# =============================================================================
+# MISSING HANDLERS - ADD MORE, EDIT, NEW ORDER
+# =============================================================================
+
+@router.callback_query(F.data == "order:add_more")
+async def handle_add_more(callback: CallbackQuery, state: FSMContext) -> None:
+    """User wants to add more items before starting order."""
+    await callback.answer()
+    await state.clear()
+    await callback.message.edit_text(
+        "👍 Хорошо! Напишите какие ещё товары вам нужны.\n\n"
+        "Когда будете готовы оформить заказ — просто скажите «оформить заказ»."
+    )
+
+
+@router.callback_query(F.data == "order:add_item")
+async def handle_add_item(callback: CallbackQuery, state: FSMContext) -> None:
+    """Add another item to order."""
+    await callback.answer()
+    await state.set_state(OrderStates.collecting_items)
+    await callback.message.edit_text(
+        "➕ <b>Добавить товар</b>\n\n"
+        "Напишите название товара и количество.\n"
+        "Например: «черника 20 кг» или «малина 15 кг»\n\n"
+        "Или напишите «готово» чтобы продолжить оформление."
+    )
+
+
+@router.message(OrderStates.collecting_items)
+async def handle_collecting_items(message: Message, state: FSMContext) -> None:
+    """Handle adding items in collecting state."""
+    text = message.text.strip().lower()
+    
+    if text in ["готово", "далее", "продолжить", "хватит"]:
+        order = await get_or_create_order(state)
+        if not order.items:
+            await message.answer("❌ В заказе нет товаров. Добавьте хотя бы один товар.")
+            return
+        
+        await state.set_state(OrderStates.confirming_items)
+        text = (
+            "📦 <b>Товары в заказе</b>\n\n"
+            f"{order.format_items_summary()}\n\n"
+            f"<b>Итого:</b> {order.total_quantity:.0f} кг — {order.total_price:.0f} ₽"
+        )
+        await message.answer(text, reply_markup=get_items_confirmation_keyboard(order))
+        return
+    
+    # Try to parse item from message
+    # This is simplified - in production would use LLM
+    await message.answer(
+        "Для добавления товара используйте формат:\n"
+        "«название товара количество кг»\n\n"
+        "Или напишите «готово» чтобы продолжить оформление."
+    )
+
+
+@router.callback_query(F.data == "order:edit:items")
+async def handle_edit_items(callback: CallbackQuery, state: FSMContext) -> None:
+    """Edit items from final confirmation."""
+    await callback.answer()
+    order = await get_or_create_order(state)
+    await state.set_state(OrderStates.confirming_items)
+    
+    text = (
+        "📦 <b>Редактирование товаров</b>\n\n"
+        f"{order.format_items_summary()}\n\n"
+        f"<b>Итого:</b> {order.total_quantity:.0f} кг — {order.total_price:.0f} ₽"
+    )
+    
+    await callback.message.edit_text(text, reply_markup=get_items_confirmation_keyboard(order))
+
+
+@router.callback_query(F.data == "order:edit:delivery")
+async def handle_edit_delivery(callback: CallbackQuery, state: FSMContext) -> None:
+    """Edit delivery from final confirmation."""
+    await callback.answer()
+    await state.set_state(OrderStates.selecting_delivery_type)
+    
+    text = (
+        "🚚 <b>Изменить способ получения</b>\n\n"
+        "Как вы хотите получить заказ?"
+    )
+    
+    await callback.message.edit_text(text, reply_markup=get_delivery_type_keyboard())
+
+
+@router.callback_query(F.data == "order:edit:contact")
+async def handle_edit_contact(callback: CallbackQuery, state: FSMContext) -> None:
+    """Edit contact from final confirmation."""
+    await callback.answer()
+    await state.set_state(OrderStates.entering_name)
+    
+    text = (
+        "👤 <b>Изменить контактные данные</b>\n\n"
+        "Как к вам обращаться?"
+    )
+    
+    await callback.message.edit_text(text)
+
+
+@router.callback_query(F.data == "order:edit:comment")
+async def handle_edit_comment(callback: CallbackQuery, state: FSMContext) -> None:
+    """Edit comment from final confirmation."""
+    await callback.answer()
+    await state.set_state(OrderStates.entering_comment)
+    
+    text = (
+        "💬 <b>Изменить комментарий</b>\n\n"
+        "Введите комментарий к заказу:"
+    )
+    
+    await callback.message.edit_text(text, reply_markup=get_skip_keyboard("comment"))
+
+
+@router.callback_query(F.data == "order:new")
+async def handle_new_order(callback: CallbackQuery, state: FSMContext) -> None:
+    """Start a new order after previous was submitted."""
+    await callback.answer()
+    await state.clear()
+    await callback.message.edit_text(
+        "📦 <b>Новый заказ</b>\n\n"
+        "Напишите какие товары вам нужны.\n"
+        "Например: «черника 10 кг и малина 5 кг»"
+    )
+
+
+@router.callback_query(F.data == "contact:manager")
+async def handle_contact_manager(callback: CallbackQuery, state: FSMContext) -> None:
+    """Show manager contact info."""
+    await callback.answer()
+    from src.config import settings
+    
+    await callback.message.answer(
+        "📞 <b>Свяжитесь с нами:</b>\n\n"
+        f"📱 Телефон: {settings.escalation_phone}\n"
+        f"📱 WhatsApp: {settings.escalation_whatsapp}\n"
+        f"📧 Email: {settings.escalation_email}\n\n"
+        "📍 Адрес: г. Киров, пер. Энгельса, 2"
+    )

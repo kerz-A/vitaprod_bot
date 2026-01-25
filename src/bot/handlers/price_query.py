@@ -60,8 +60,19 @@ async def handle_message(message: Message, state: FSMContext) -> None:
             
             # Get relevant products (NOT async!)
             retriever = get_retriever()
-            result = await retriever.search(user_query, top_k=10)
-            products = [p.model_dump() for p in result.products] if result.products else []
+            result = await retriever.retrieve(query=user_query, top_k=10)
+            # Products могут быть dict или Pydantic model
+            if result.products:
+                products = []
+                for p in result.products:
+                    if hasattr(p, 'model_dump'):
+                        products.append(p.model_dump())
+                    elif isinstance(p, dict):
+                        products.append(p)
+                    else:
+                        products.append(vars(p))
+            else:
+                products = []
             
             # Detect order intent
             intent = await detect_order_intent(
