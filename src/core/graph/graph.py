@@ -188,13 +188,48 @@ async def get_conversation_history(user_id: int) -> list[dict]:
 async def clear_conversation(user_id: int) -> bool:
     """
     Clear conversation history for a user.
-    Note: With PostgresSaver, this creates a new thread effectively.
+    Deletes checkpoints from PostgreSQL for this thread_id.
     
     Returns:
         True if successful
     """
-    logger.info(f"Clear conversation requested for user {user_id}")
-    # PostgresSaver doesn't have a direct delete method
-    # The conversation will be "cleared" by using a new thread_id suffix
-    # For now, we just log it - implement proper clearing if needed
-    return True
+    import psycopg
+    
+    thread_id = str(user_id)
+    logger.info(f"Clearing conversation for user {user_id} (thread_id: {thread_id})")
+    
+    try:
+        conn_string = settings.postgres_url
+        
+        with psycopg.connect(conn_string) as conn:
+            with conn.cursor() as cur:
+                # Delete from all checkpoint tables for this thread
+                cur.execute(
+                    "DELETE FROM checkpoint_writes WHERE thread_id = %s",
+                    (thread_id,)
+                )
+                writes_deleted = cur.rowcount
+                
+                cur.execute(
+                    "DELETE FROM checkpoint_blobs WHERE thread_id = %s",
+                    (thread_id,)
+                )
+                blobs_deleted = cur.rowcount
+                
+                cur.execute(
+                    "DELETE FROM checkpoints WHERE thread_id = %s",
+                    (thread_id,)
+                )
+                checkpoints_deleted = cur.rowcount
+                
+            conn.commit()
+        
+        logger.info(
+            f"Conversation cleared for user {user_id}: "
+            f"checkpoints={checkpoints_deleted}, blobs={blobs_deleted}, writes={writes_deleted}"
+        )
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error clearing conversation: {e}", exc_info=True)
+        return False
