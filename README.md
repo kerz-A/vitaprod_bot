@@ -303,13 +303,4 @@ python -c "from sentence_transformers import SentenceTransformer; SentenceTransf
 2. Убедитесь что менеджер начал диалог с ботом (отправил `/start`)
 3. Проверьте логи на наличие ошибок отправки
 
-## Контакты
 
-- **Телефон:** +7 912 828-18-38
-- **WhatsApp:** +7 912 828-18-38
-- **Email:** vitaprod43@mail.ru
-- **Адрес:** г. Киров, пер. Энгельса, 2
-
-## Лицензия
-
-MIT License
