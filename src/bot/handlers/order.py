@@ -877,43 +877,44 @@ async def handle_order_submit(callback: CallbackQuery, state: FSMContext) -> Non
     xlsx_path = order_exporter.export(order)
     logger.info(f"Order {order.id} exported to {xlsx_path}")
     
-    # Send to manager
-    manager_id = settings.manager_telegram_id
-    logger.info(f"Manager ID from settings: {manager_id}")
+    # Send to all managers
+    manager_ids = settings.manager_ids
+    logger.info(f"Manager IDs from settings: {manager_ids}")
     
-    if manager_id:
-        try:
-            from src.bot.bot import get_bot
-            bot = get_bot()
-            
-            logger.info(f"Sending order {order.id} to manager {manager_id}...")
-            
-            # Send text notification
-            await bot.send_message(
-                chat_id=manager_id,
-                text=(
-                    f"🔔 <b>Новая заявка {order.order_number}</b>\n\n"
-                    f"{order.format_full_summary()}"
-                ),
-                parse_mode="HTML",
-            )
-            logger.info(f"Text notification sent to {manager_id}")
-            
-            # Send XLSX file
-            await bot.send_document(
-                chat_id=manager_id,
-                document=FSInputFile(xlsx_path),
-                caption=f"📎 Заявка {order.order_number} в формате Excel"
-            )
-            logger.info(f"XLSX file sent to {manager_id}")
-            
-            order.manager_notified = True
-            logger.info(f"Order {order.id} successfully sent to manager {manager_id}")
-            
-        except Exception as e:
-            logger.error(f"Failed to notify manager {manager_id}: {e}", exc_info=True)
+    if manager_ids:
+        from src.bot.bot import get_bot
+        bot = get_bot()
+        
+        for manager_id in manager_ids:
+            try:
+                logger.info(f"Sending order {order.id} to manager {manager_id}...")
+                
+                # Send text notification
+                await bot.send_message(
+                    chat_id=manager_id,
+                    text=(
+                        f"🔔 <b>Новая заявка {order.order_number}</b>\n\n"
+                        f"{order.format_full_summary()}"
+                    ),
+                    parse_mode="HTML",
+                )
+                logger.info(f"Text notification sent to {manager_id}")
+                
+                # Send XLSX file
+                await bot.send_document(
+                    chat_id=manager_id,
+                    document=FSInputFile(xlsx_path),
+                    caption=f"📎 Заявка {order.order_number} в формате Excel"
+                )
+                logger.info(f"XLSX file sent to {manager_id}")
+                
+                order.manager_notified = True
+                logger.info(f"Order {order.id} successfully sent to manager {manager_id}")
+                
+            except Exception as e:
+                logger.error(f"Failed to notify manager {manager_id}: {e}", exc_info=True)
     else:
-        logger.warning("MANAGER_TELEGRAM_ID not set in .env!")
+        logger.warning("No MANAGER_TELEGRAM_ID set in .env!")
     
     # Save customer data for future autofill
     await save_customer_data(order.customer)

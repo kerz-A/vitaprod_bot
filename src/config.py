@@ -91,9 +91,12 @@ class Settings(BaseSettings):
         default="vitaprod43@mail.ru", description="Email for escalation"
     )
     
-    # Manager notification
+    # Manager notifications (orders will be sent to both)
     manager_telegram_id: Optional[int] = Field(
-        default=None, description="Telegram ID of manager to receive orders"
+        default=None, description="Telegram ID of first manager to receive orders"
+    )
+    manager_telegram_id_2: Optional[int] = Field(
+        default=None, description="Telegram ID of second manager to receive orders"
     )
 
     # Embeddings
@@ -125,6 +128,16 @@ class Settings(BaseSettings):
     def sqlite_path(self) -> Path:
         """Path to SQLite database file."""
         return self.data_dir / "vitaprod.db"
+    
+    @property
+    def manager_ids(self) -> list[int]:
+        """Get list of all manager IDs for notifications."""
+        ids = []
+        if self.manager_telegram_id:
+            ids.append(self.manager_telegram_id)
+        if self.manager_telegram_id_2:
+            ids.append(self.manager_telegram_id_2)
+        return ids
 
 
 # Global settings instance
