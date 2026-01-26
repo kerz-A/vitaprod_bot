@@ -47,45 +47,18 @@ async def handle_message(message: Message, state: FSMContext) -> None:
 
     try:
         # Check for order intent (quick check first)
+        order_started = False
+        
         if quick_order_check(user_query):
-            # Get conversation context for intent detection
-            from src.core.graph import get_conversation_history
-            from src.core.rag.retriever import get_retriever
-            
-            history = await get_conversation_history(user_id)
-            context = "\n".join([
-                f"{'Клиент' if h['role'] == 'user' else 'Бот'}: {h['content']}" 
-                for h in history[-6:]
-            ])
-            
-            # Get relevant products (NOT async!)
-            retriever = get_retriever()
-            result = await retriever.retrieve(query=user_query, top_k=10)
-            # Products могут быть dict или Pydantic model
-            if result.products:
-                products = []
-                for p in result.products:
-                    if hasattr(p, 'model_dump'):
-                        products.append(p.model_dump())
-                    elif isinstance(p, dict):
-                        products.append(p)
-                    else:
-                        products.append(vars(p))
-            else:
-                products = []
-            
-            # Detect order intent
-            intent = await detect_order_intent(
-                user_message=user_query,
-                conversation_context=context,
-                available_products=products,
-            )
-            
-            if intent.is_order and intent.items and intent.confidence >= 0.7:
-                # Start order flow
-                from src.bot.handlers.order import start_order_from_cart
-                await start_order_from_cart(message, state, intent.items)
-                return
+            try:
+                order_started = await try_start_order(message, state, user_id, user_query)
+            except Exception as e:
+                # Log error but continue to regular chat
+                logger.warning(f"Order intent detection failed, falling back to chat: {e}")
+                order_started = False
+        
+        if order_started:
+            return
 
         # Regular conversation processing through LangGraph
         response = await chat(
@@ -106,6 +79,57 @@ async def handle_message(message: Message, state: FSMContext) -> None:
 
         await message.answer(
             "Извините, произошла ошибка при обработке запроса. "
-            "Пожалуйста, попробуйте позже или свяжитесь с менеджером:\n"
+            "Пожалуйста, попробуйте переформулировать вопрос или свяжитесь с менеджером:\n"
             "📞 +7 912 828-18-38"
         )
+
+
+async def try_start_order(message: Message, state: FSMContext, user_id: int, user_query: str) -> bool:
+    """
+    Try to detect order intent and start order flow.
+    Returns True if order flow was started, False otherwise.
+    """
+    from src.core.graph import get_conversation_history
+    from src.core.rag.retriever import get_retriever
+    
+    # Get conversation context for intent detection
+    history = await get_conversation_history(user_id)
+    context = "\n".join([
+        f"{'Клиент' if h['role'] == 'user' else 'Бот'}: {h['content']}" 
+        for h in history[-6:]
+    ]) if history else ""
+    
+    # Get relevant products (NOT async!)
+    retriever = get_retriever()
+    result = await retriever.retrieve(query=user_query, top_k=10)
+    
+    # Products могут быть dict или Pydantic model
+    products = []
+    if result and result.products:
+        for p in result.products:
+            if hasattr(p, 'model_dump'):
+                products.append(p.model_dump())
+            elif isinstance(p, dict):
+                products.append(p)
+            else:
+                products.append(vars(p))
+    
+    # If no products found - don't try to create order
+    if not products:
+        logger.info("No products found for order intent, falling back to chat")
+        return False
+    
+    # Detect order intent
+    intent = await detect_order_intent(
+        user_message=user_query,
+        conversation_context=context,
+        available_products=products,
+    )
+    
+    if intent.is_order and intent.items and intent.confidence >= 0.7:
+        # Start order flow
+        from src.bot.handlers.order import start_order_from_cart
+        await start_order_from_cart(message, state, intent.items)
+        return True
+    
+    return False
