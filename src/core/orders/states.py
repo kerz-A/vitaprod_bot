@@ -13,6 +13,10 @@ class OrderStates(StatesGroup):
     editing_item = State()           # Редактирование позиции
     confirming_items = State()       # Подтверждение списка товаров
     
+    # Упаковка (новые шаги)
+    selecting_packaging = State()    # Выбор типа упаковки: коробка/мешок
+    entering_package_weight = State() # Ввод веса тарного места
+    
     # Тип доставки
     selecting_delivery_type = State()  # Выбор: доставка или самовывоз
     

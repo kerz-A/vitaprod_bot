@@ -1,6 +1,14 @@
 """
 Order handling for VitaProd bot.
 Manages the complete order flow using FSM.
+
+FLOW (6 steps):
+1. Упаковка (тип: коробка/мешок/любая)
+2. Вес тарного места (если не "любая")
+3. Способ доставки (доставка/самовывоз)
+4. Адрес (если доставка) + Дата + Время
+5. Контакты (имя → телефон → компания)
+6. Комментарий + Подтверждение
 """
 
 import logging
@@ -13,6 +21,7 @@ from aiogram.fsm.context import FSMContext
 
 from src.core.orders import (
     Order, OrderItem, OrderStatus, CustomerInfo, DeliveryInfo, DeliveryType,
+    PackagingInfo, PackagingType,
     OrderStates, PhoneValidator, DateValidator, TimeValidator, AddressValidator,
     order_exporter,
 )
@@ -21,10 +30,15 @@ from src.bot.keyboards.order import (
     get_items_confirmation_keyboard,
     get_edit_item_keyboard,
     get_delete_confirmation_keyboard,
+    get_packaging_type_keyboard,
+    get_package_weight_keyboard,
     get_delivery_type_keyboard,
+    get_address_input_keyboard,
     get_date_quick_keyboard,
     get_time_quick_keyboard,
     get_weekend_warning_keyboard,
+    get_name_input_keyboard,
+    get_phone_input_keyboard,
     get_skip_keyboard,
     get_use_saved_keyboard,
     get_final_confirmation_keyboard,
@@ -37,10 +51,20 @@ logger = logging.getLogger(__name__)
 
 router = Router(name="orders")
 
+# Total steps in the order flow
+TOTAL_STEPS = 6
+
 
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
+
+def format_order_progress(current_step: int) -> str:
+    """Format progress indicator."""
+    filled = "●" * current_step
+    empty = "○" * (TOTAL_STEPS - current_step)
+    return f"[{filled}{empty}] Шаг {current_step} из {TOTAL_STEPS}"
+
 
 async def get_or_create_order(state: FSMContext) -> Order:
     """Get existing order from state or create new one."""
@@ -74,6 +98,14 @@ async def get_or_create_order(state: FSMContext) -> Order:
                 desired_time_to=time.fromisoformat(del_data["desired_time_to"]) if del_data.get("desired_time_to") else None,
             )
         
+        # Restore packaging
+        if order_data.get("packaging"):
+            pkg_data = order_data["packaging"]
+            order.packaging = PackagingInfo(
+                packaging_type=PackagingType(pkg_data["packaging_type"]),
+                weight_per_unit=pkg_data.get("weight_per_unit"),
+            )
+        
         order.comment = order_data.get("comment")
         return order
     
@@ -88,7 +120,6 @@ async def save_order_to_state(state: FSMContext, order: Order) -> None:
 async def get_saved_customer_data(telegram_id: int) -> Optional[dict]:
     """Get saved customer data from database."""
     # TODO: Implement database lookup
-    # For now, return None
     return None
 
 
@@ -96,13 +127,6 @@ async def save_customer_data(customer: CustomerInfo) -> None:
     """Save customer data to database for future autofill."""
     # TODO: Implement database save
     pass
-
-
-def format_order_progress(current_step: int, total_steps: int = 5) -> str:
-    """Format progress indicator."""
-    filled = "●" * current_step
-    empty = "○" * (total_steps - current_step)
-    return f"[{filled}{empty}] Шаг {current_step} из {total_steps}"
 
 
 # =============================================================================
@@ -154,7 +178,7 @@ async def start_order_from_cart(
 
 @router.callback_query(F.data == "order:start")
 async def handle_order_start(callback: CallbackQuery, state: FSMContext) -> None:
-    """Handle order start button."""
+    """Handle order start button - go to step 1 (packaging)."""
     await callback.answer()
     order = await get_or_create_order(state)
     
@@ -165,15 +189,16 @@ async def handle_order_start(callback: CallbackQuery, state: FSMContext) -> None
         await state.clear()
         return
     
-    await state.set_state(OrderStates.selecting_delivery_type)
+    # Step 1: Packaging
+    await state.set_state(OrderStates.selecting_packaging)
     
     text = (
         f"{format_order_progress(1)}\n\n"
-        "🚚 <b>Способ получения</b>\n\n"
-        "Как вы хотите получить заказ?"
+        "📦 <b>Упаковка</b>\n\n"
+        "Выберите тип упаковки:"
     )
     
-    await callback.message.edit_text(text, reply_markup=get_delivery_type_keyboard())
+    await callback.message.edit_text(text, reply_markup=get_packaging_type_keyboard())
 
 
 # =============================================================================
@@ -329,12 +354,155 @@ async def handle_quantity_input(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "order:confirm_items")
 async def handle_confirm_items(callback: CallbackQuery, state: FSMContext) -> None:
-    """Confirm items and proceed to delivery."""
+    """Confirm items and proceed to step 1: packaging."""
     await callback.answer()
-    await state.set_state(OrderStates.selecting_delivery_type)
+    await state.set_state(OrderStates.selecting_packaging)
     
     text = (
         f"{format_order_progress(1)}\n\n"
+        "📦 <b>Упаковка</b>\n\n"
+        "Выберите тип упаковки:"
+    )
+    
+    await callback.message.edit_text(text, reply_markup=get_packaging_type_keyboard())
+
+
+# =============================================================================
+# STEP 1: PACKAGING TYPE
+# =============================================================================
+
+@router.callback_query(F.data.startswith("order:packaging:"))
+async def handle_packaging_selected(callback: CallbackQuery, state: FSMContext) -> None:
+    """Handle packaging type selection."""
+    await callback.answer()
+    packaging_type_str = callback.data.split(":")[-1]
+    
+    order = await get_or_create_order(state)
+    
+    if not order.packaging:
+        order.packaging = PackagingInfo()
+    
+    packaging_type = PackagingType(packaging_type_str)
+    order.packaging.packaging_type = packaging_type
+    await save_order_to_state(state, order)
+    
+    # If "any" selected - skip weight selection, go to step 3
+    if packaging_type == PackagingType.ANY:
+        order.packaging.weight_per_unit = None
+        await save_order_to_state(state, order)
+        await proceed_to_delivery_type(callback, state)
+        return
+    
+    # Step 2: Ask for weight per unit
+    await state.set_state(OrderStates.entering_package_weight)
+    
+    type_name = "коробке" if packaging_type == PackagingType.BOX else "мешке"
+    text = (
+        f"{format_order_progress(2)}\n\n"
+        f"⚖️ <b>Вес тарного места</b>\n\n"
+        f"Сколько кг должно быть в одной {type_name}?"
+    )
+    
+    await callback.message.edit_text(text, reply_markup=get_package_weight_keyboard())
+
+
+@router.callback_query(F.data == "order:back_to_packaging")
+async def handle_back_to_packaging(callback: CallbackQuery, state: FSMContext) -> None:
+    """Go back to step 1: packaging selection."""
+    await callback.answer()
+    await state.set_state(OrderStates.selecting_packaging)
+    
+    text = (
+        f"{format_order_progress(1)}\n\n"
+        "📦 <b>Упаковка</b>\n\n"
+        "Выберите тип упаковки:"
+    )
+    
+    await callback.message.edit_text(text, reply_markup=get_packaging_type_keyboard())
+
+
+# =============================================================================
+# STEP 2: PACKAGE WEIGHT
+# =============================================================================
+
+@router.callback_query(F.data.startswith("order:pkg_weight:"))
+async def handle_package_weight_selected(callback: CallbackQuery, state: FSMContext) -> None:
+    """Handle package weight selection."""
+    await callback.answer()
+    weight_str = callback.data.split(":")[-1]
+    
+    order = await get_or_create_order(state)
+    
+    if weight_str == "custom":
+        # Ask for custom weight
+        await state.set_state(OrderStates.entering_package_weight)
+        await callback.message.edit_text(
+            f"{format_order_progress(2)}\n\n"
+            "⚖️ <b>Введите вес тарного места</b>\n\n"
+            "Укажите сколько кг должно быть в одной упаковке (число):"
+        )
+        return
+    
+    if weight_str == "any":
+        order.packaging.weight_per_unit = None
+    else:
+        order.packaging.weight_per_unit = float(weight_str)
+    
+    await save_order_to_state(state, order)
+    await proceed_to_delivery_type(callback, state)
+
+
+@router.message(OrderStates.entering_package_weight)
+async def handle_package_weight_input(message: Message, state: FSMContext) -> None:
+    """Handle manual package weight input."""
+    import re
+    
+    # Extract number from text
+    match = re.search(r'(\d+(?:[.,]\d+)?)', message.text)
+    if not match:
+        await message.answer(
+            "❌ Пожалуйста, введите число.\n"
+            "Например: 10 или 25"
+        )
+        return
+    
+    weight = float(match.group(1).replace(',', '.'))
+    
+    if weight < 1 or weight > 50:
+        await message.answer(
+            "❌ Вес тарного места должен быть от 1 до 50 кг.\n"
+            "Попробуйте ещё раз:"
+        )
+        return
+    
+    order = await get_or_create_order(state)
+    order.packaging.weight_per_unit = weight
+    await save_order_to_state(state, order)
+    
+    # Proceed to step 3: delivery type
+    await state.set_state(OrderStates.selecting_delivery_type)
+    
+    text = (
+        f"{format_order_progress(3)}\n\n"
+        f"✅ Упаковка: {order.packaging.format_summary()}\n\n"
+        "🚚 <b>Способ получения</b>\n\n"
+        "Как вы хотите получить заказ?"
+    )
+    
+    await message.answer(text, reply_markup=get_delivery_type_keyboard())
+
+
+async def proceed_to_delivery_type(callback: CallbackQuery, state: FSMContext) -> None:
+    """Proceed to step 3: delivery type selection after packaging."""
+    await state.set_state(OrderStates.selecting_delivery_type)
+    
+    order = await get_or_create_order(state)
+    
+    pkg_info = order.packaging.format_summary() if order.packaging else "Любая"
+    
+    text = (
+        f"{format_order_progress(3)}\n\n"
+        f"✅ Упаковка: {pkg_info}\n\n"
         "🚚 <b>Способ получения</b>\n\n"
         "Как вы хотите получить заказ?"
     )
@@ -343,12 +511,12 @@ async def handle_confirm_items(callback: CallbackQuery, state: FSMContext) -> No
 
 
 # =============================================================================
-# DELIVERY TYPE
+# STEP 3: DELIVERY TYPE
 # =============================================================================
 
 @router.callback_query(F.data == "order:delivery:delivery")
 async def handle_delivery_selected(callback: CallbackQuery, state: FSMContext) -> None:
-    """Handle delivery selection."""
+    """Handle delivery selection - go to step 4: address."""
     await callback.answer()
     order = await get_or_create_order(state)
     
@@ -359,28 +527,19 @@ async def handle_delivery_selected(callback: CallbackQuery, state: FSMContext) -
     
     await state.set_state(OrderStates.entering_address)
     
-    # Check for saved address
-    saved_data = await get_saved_customer_data(callback.from_user.id)
-    
     text = (
-        f"{format_order_progress(2)}\n\n"
+        f"{format_order_progress(4)}\n\n"
         "📍 <b>Адрес доставки</b>\n\n"
         "Введите полный адрес:\n"
-        "(город, улица, дом, офис/квартира)"
+        "<i>(город, улица, дом, офис/квартира)</i>"
     )
     
-    if saved_data and saved_data.get("address"):
-        await callback.message.edit_text(
-            text, 
-            reply_markup=get_use_saved_keyboard("address", saved_data["address"])
-        )
-    else:
-        await callback.message.edit_text(text)
+    await callback.message.edit_text(text, reply_markup=get_address_input_keyboard())
 
 
 @router.callback_query(F.data == "order:delivery:pickup")
 async def handle_pickup_selected(callback: CallbackQuery, state: FSMContext) -> None:
-    """Handle pickup selection."""
+    """Handle pickup selection - skip address, go to date."""
     await callback.answer()
     order = await get_or_create_order(state)
     
@@ -389,11 +548,11 @@ async def handle_pickup_selected(callback: CallbackQuery, state: FSMContext) -> 
     order.delivery.delivery_type = DeliveryType.PICKUP
     await save_order_to_state(state, order)
     
-    # Skip address, go to date
+    # Skip address, go to date selection
     await state.set_state(OrderStates.entering_date)
     
     text = (
-        f"{format_order_progress(2)}\n\n"
+        f"{format_order_progress(4)}\n\n"
         "🏪 <b>Самовывоз</b>\n\n"
         "📍 Адрес склада: г. Киров, пер. Энгельса, 2\n\n"
         "📅 Выберите желаемую дату:"
@@ -402,8 +561,27 @@ async def handle_pickup_selected(callback: CallbackQuery, state: FSMContext) -> 
     await callback.message.edit_text(text, reply_markup=get_date_quick_keyboard())
 
 
+@router.callback_query(F.data == "order:back_to_delivery")
+async def handle_back_to_delivery(callback: CallbackQuery, state: FSMContext) -> None:
+    """Go back to step 3: delivery type selection."""
+    await callback.answer()
+    await state.set_state(OrderStates.selecting_delivery_type)
+    
+    order = await get_or_create_order(state)
+    pkg_info = order.packaging.format_summary() if order.packaging else "Любая"
+    
+    text = (
+        f"{format_order_progress(3)}\n\n"
+        f"✅ Упаковка: {pkg_info}\n\n"
+        "🚚 <b>Способ получения</b>\n\n"
+        "Как вы хотите получить заказ?"
+    )
+    
+    await callback.message.edit_text(text, reply_markup=get_delivery_type_keyboard())
+
+
 # =============================================================================
-# ADDRESS
+# STEP 4: ADDRESS + DATE + TIME
 # =============================================================================
 
 @router.message(OrderStates.entering_address)
@@ -412,7 +590,10 @@ async def handle_address_input(message: Message, state: FSMContext) -> None:
     is_valid, address, error = AddressValidator.validate(message.text)
     
     if not is_valid:
-        await message.answer(f"❌ {error}\n\nПопробуйте ещё раз:")
+        await message.answer(
+            f"❌ {error}\n\nПопробуйте ещё раз:",
+            reply_markup=get_address_input_keyboard()
+        )
         return
     
     order = await get_or_create_order(state)
@@ -422,17 +603,13 @@ async def handle_address_input(message: Message, state: FSMContext) -> None:
     await state.set_state(OrderStates.entering_date)
     
     text = (
-        f"{format_order_progress(2)}\n\n"
+        f"{format_order_progress(4)}\n\n"
         f"✅ Адрес: {address}\n\n"
         "📅 Выберите желаемую дату доставки:"
     )
     
     await message.answer(text, reply_markup=get_date_quick_keyboard())
 
-
-# =============================================================================
-# DATE
-# =============================================================================
 
 @router.callback_query(F.data.startswith("order:date:"))
 async def handle_date_selection(callback: CallbackQuery, state: FSMContext) -> None:
@@ -443,9 +620,9 @@ async def handle_date_selection(callback: CallbackQuery, state: FSMContext) -> N
     if date_str == "custom":
         await state.set_state(OrderStates.entering_date)
         await callback.message.edit_text(
-            f"{format_order_progress(2)}\n\n"
+            f"{format_order_progress(4)}\n\n"
             "📅 <b>Введите желаемую дату</b>\n\n"
-            "Формат: ДД.ММ.ГГГГ или 'завтра'"
+            "Формат: ДД.ММ.ГГГГ или ДД.ММ или 'завтра'"
         )
         return
     
@@ -465,6 +642,31 @@ async def handle_date_selection(callback: CallbackQuery, state: FSMContext) -> N
         return
     
     await set_delivery_date(callback, state, selected_date)
+
+
+@router.callback_query(F.data == "order:back_to_date")
+async def handle_back_to_date(callback: CallbackQuery, state: FSMContext) -> None:
+    """Go back to date selection."""
+    await callback.answer()
+    await state.set_state(OrderStates.entering_date)
+    
+    order = await get_or_create_order(state)
+    
+    if order.delivery.delivery_type == DeliveryType.PICKUP:
+        text = (
+            f"{format_order_progress(4)}\n\n"
+            "🏪 <b>Самовывоз</b>\n\n"
+            "📍 Адрес склада: г. Киров, пер. Энгельса, 2\n\n"
+            "📅 Выберите желаемую дату:"
+        )
+    else:
+        text = (
+            f"{format_order_progress(4)}\n\n"
+            f"📍 Адрес: {order.delivery.address}\n\n"
+            "📅 Выберите желаемую дату доставки:"
+        )
+    
+    await callback.message.edit_text(text, reply_markup=get_date_quick_keyboard())
 
 
 @router.callback_query(F.data.startswith("order:date_confirm:"))
@@ -487,7 +689,7 @@ async def set_delivery_date(callback: CallbackQuery, state: FSMContext, selected
     weekday = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][selected_date.weekday()]
     
     text = (
-        f"{format_order_progress(2)}\n\n"
+        f"{format_order_progress(4)}\n\n"
         f"✅ Дата: {selected_date.strftime('%d.%m.%Y')} ({weekday})\n\n"
         "🕐 Выберите желаемое время:"
     )
@@ -524,17 +726,13 @@ async def handle_date_input(message: Message, state: FSMContext) -> None:
     weekday = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][parsed_date.weekday()]
     
     text = (
-        f"{format_order_progress(2)}\n\n"
+        f"{format_order_progress(4)}\n\n"
         f"✅ Дата: {parsed_date.strftime('%d.%m.%Y')} ({weekday})\n\n"
         "🕐 Выберите желаемое время:"
     )
     
     await message.answer(text, reply_markup=get_time_quick_keyboard())
 
-
-# =============================================================================
-# TIME
-# =============================================================================
 
 @router.callback_query(F.data.startswith("order:time:"))
 async def handle_time_selection(callback: CallbackQuery, state: FSMContext) -> None:
@@ -545,7 +743,7 @@ async def handle_time_selection(callback: CallbackQuery, state: FSMContext) -> N
     if time_str == "custom":
         await state.set_state(OrderStates.entering_time)
         await callback.message.edit_text(
-            f"{format_order_progress(2)}\n\n"
+            f"{format_order_progress(4)}\n\n"
             "🕐 <b>Введите желаемое время</b>\n\n"
             "Например: 10:00-14:00 или 'с 10 до 14'"
         )
@@ -559,13 +757,31 @@ async def handle_time_selection(callback: CallbackQuery, state: FSMContext) -> N
     await set_delivery_time(callback, state, time_from, time_to)
 
 
+@router.callback_query(F.data == "order:back_to_time")
+async def handle_back_to_time(callback: CallbackQuery, state: FSMContext) -> None:
+    """Go back to time selection."""
+    await callback.answer()
+    await state.set_state(OrderStates.entering_time)
+    
+    order = await get_or_create_order(state)
+    weekday = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][order.delivery.desired_date.weekday()]
+    
+    text = (
+        f"{format_order_progress(4)}\n\n"
+        f"✅ Дата: {order.delivery.desired_date.strftime('%d.%m.%Y')} ({weekday})\n\n"
+        "🕐 Выберите желаемое время:"
+    )
+    
+    await callback.message.edit_text(text, reply_markup=get_time_quick_keyboard())
+
+
 async def set_delivery_time(
     callback: CallbackQuery, 
     state: FSMContext, 
     time_from: time, 
     time_to: time
 ) -> None:
-    """Set delivery time and proceed to contact info."""
+    """Set delivery time and proceed to step 5: contact info."""
     order = await get_or_create_order(state)
     order.delivery.desired_time_from = time_from
     order.delivery.desired_time_to = time_to
@@ -573,23 +789,14 @@ async def set_delivery_time(
     
     await state.set_state(OrderStates.entering_name)
     
-    # Check for saved name
-    saved_name = order.customer.name if order.customer else None
-    
     text = (
-        f"{format_order_progress(3)}\n\n"
+        f"{format_order_progress(5)}\n\n"
         f"✅ Время: {time_from.strftime('%H:%M')} - {time_to.strftime('%H:%M')}\n\n"
         "👤 <b>Контактные данные</b>\n\n"
         "Как к вам обращаться?"
     )
     
-    if saved_name:
-        await callback.message.edit_text(
-            text,
-            reply_markup=get_use_saved_keyboard("name", saved_name)
-        )
-    else:
-        await callback.message.edit_text(text)
+    await callback.message.edit_text(text, reply_markup=get_name_input_keyboard())
 
 
 @router.message(OrderStates.entering_time)
@@ -611,17 +818,17 @@ async def handle_time_input(message: Message, state: FSMContext) -> None:
     await state.set_state(OrderStates.entering_name)
     
     text = (
-        f"{format_order_progress(3)}\n\n"
+        f"{format_order_progress(5)}\n\n"
         f"✅ Время: {time_from.strftime('%H:%M')} - {time_to.strftime('%H:%M')}\n\n"
         "👤 <b>Контактные данные</b>\n\n"
         "Как к вам обращаться?"
     )
     
-    await message.answer(text)
+    await message.answer(text, reply_markup=get_name_input_keyboard())
 
 
 # =============================================================================
-# CONTACT INFO
+# STEP 5: CONTACT INFO (Name -> Phone -> Company)
 # =============================================================================
 
 @router.callback_query(F.data == "order:use_saved:name")
@@ -629,7 +836,6 @@ async def handle_use_saved_name(callback: CallbackQuery, state: FSMContext) -> N
     """Use saved name."""
     await callback.answer()
     order = await get_or_create_order(state)
-    # Name already set from telegram
     await proceed_to_phone(callback.message, state, order, is_callback=True)
 
 
@@ -639,93 +845,70 @@ async def handle_enter_new_name(callback: CallbackQuery, state: FSMContext) -> N
     await callback.answer()
     await state.set_state(OrderStates.entering_name)
     await callback.message.edit_text(
-        f"{format_order_progress(3)}\n\n"
+        f"{format_order_progress(5)}\n\n"
         "👤 <b>Контактные данные</b>\n\n"
-        "Введите ваше имя:"
+        "Введите ваше имя:",
+        reply_markup=get_name_input_keyboard()
     )
 
 
-@router.callback_query(F.data == "order:use_saved:phone")
-async def handle_use_saved_phone(callback: CallbackQuery, state: FSMContext) -> None:
-    """Use saved phone."""
+@router.callback_query(F.data == "order:back_to_name")
+async def handle_back_to_name(callback: CallbackQuery, state: FSMContext) -> None:
+    """Go back to name input."""
     await callback.answer()
-    data = await state.get_data()
-    saved_phone = data.get("saved_phone")
-    
-    if saved_phone:
-        order = await get_or_create_order(state)
-        order.customer.phone = saved_phone
-        await save_order_to_state(state, order)
-    
-    await state.set_state(OrderStates.entering_company)
+    await state.set_state(OrderStates.entering_name)
     
     text = (
-        f"{format_order_progress(3)}\n\n"
-        "🏢 <b>Компания</b> (необязательно)\n\n"
-        "Введите название компании или нажмите 'Пропустить':"
+        f"{format_order_progress(5)}\n\n"
+        "👤 <b>Контактные данные</b>\n\n"
+        "Как к вам обращаться?"
     )
     
-    await callback.message.edit_text(text, reply_markup=get_skip_keyboard("company"))
-
-
-@router.callback_query(F.data == "order:enter_new:phone")
-async def handle_enter_new_phone(callback: CallbackQuery, state: FSMContext) -> None:
-    """Enter new phone instead of saved."""
-    await callback.answer()
-    await state.set_state(OrderStates.entering_phone)
-    await callback.message.edit_text(
-        f"{format_order_progress(3)}\n\n"
-        "📞 <b>Контактный телефон</b>\n\n"
-        "Введите номер телефона:"
-    )
-
-
-@router.callback_query(F.data == "order:use_saved:address")
-async def handle_use_saved_address(callback: CallbackQuery, state: FSMContext) -> None:
-    """Use saved address."""
-    await callback.answer()
-    data = await state.get_data()
-    saved_address = data.get("saved_address")
-    
-    if saved_address:
-        order = await get_or_create_order(state)
-        order.delivery.address = saved_address
-        await save_order_to_state(state, order)
-    
-    await state.set_state(OrderStates.entering_date)
-    
-    text = (
-        f"{format_order_progress(2)}\n\n"
-        f"✅ Адрес: {saved_address}\n\n"
-        "📅 Выберите желаемую дату доставки:"
-    )
-    
-    await callback.message.edit_text(text, reply_markup=get_date_quick_keyboard())
-
-
-@router.callback_query(F.data == "order:enter_new:address")
-async def handle_enter_new_address(callback: CallbackQuery, state: FSMContext) -> None:
-    """Enter new address instead of saved."""
-    await callback.answer()
-    await state.set_state(OrderStates.entering_address)
-    await callback.message.edit_text(
-        f"{format_order_progress(2)}\n\n"
-        "📍 <b>Адрес доставки</b>\n\n"
-        "Введите полный адрес:\n"
-        "(город, улица, дом, офис/квартира)"
-    )
+    await callback.message.edit_text(text, reply_markup=get_name_input_keyboard())
 
 
 @router.message(OrderStates.entering_name)
 async def handle_name_input(message: Message, state: FSMContext) -> None:
     """Handle name input."""
+    import re
+    
     name = message.text.strip()
     
+    # Check if user entered phone instead of name
+    if re.search(r'^[\d\s\+\-\(\)]{7,}$', name):
+        await message.answer(
+            "❌ Похоже, вы ввели номер телефона.\n\n"
+            "Сейчас нужно ввести <b>ваше имя</b>.\n"
+            "Например: Иван или Иван Петров",
+            reply_markup=get_name_input_keyboard()
+        )
+        return
+    
     if len(name) < 2:
-        await message.answer("❌ Имя слишком короткое. Введите ваше имя:")
+        await message.answer(
+            "❌ Имя слишком короткое.\n\n"
+            "Введите ваше имя (минимум 2 символа):",
+            reply_markup=get_name_input_keyboard()
+        )
+        return
+    
+    if len(name) > 100:
+        await message.answer(
+            "❌ Имя слишком длинное.\n\n"
+            "Введите ваше имя (максимум 100 символов):",
+            reply_markup=get_name_input_keyboard()
+        )
         return
     
     order = await get_or_create_order(state)
+    
+    # Ensure customer exists
+    if not order.customer:
+        order.customer = CustomerInfo(
+            telegram_id=message.from_user.id,
+            telegram_username=message.from_user.username,
+        )
+    
     order.customer.name = name
     await save_order_to_state(state, order)
     
@@ -741,31 +924,66 @@ async def proceed_to_phone(
     """Proceed to phone input."""
     await state.set_state(OrderStates.entering_phone)
     
-    saved_data = await get_saved_customer_data(order.customer.telegram_id)
+    if not order.customer:
+        return
     
     text = (
-        f"{format_order_progress(3)}\n\n"
+        f"{format_order_progress(5)}\n\n"
+        f"✅ Имя: {order.customer.name}\n\n"
+        "📞 <b>Контактный телефон</b>\n\n"
+        "Введите номер телефона:\n"
+        "<i>Например: +7 912 123-45-67 или 89121234567</i>"
+    )
+    
+    if is_callback:
+        await message_or_callback.edit_text(text, reply_markup=get_phone_input_keyboard())
+    else:
+        await message_or_callback.answer(text, reply_markup=get_phone_input_keyboard())
+
+
+@router.callback_query(F.data == "order:back_to_phone")
+async def handle_back_to_phone(callback: CallbackQuery, state: FSMContext) -> None:
+    """Go back to phone input."""
+    await callback.answer()
+    order = await get_or_create_order(state)
+    await state.set_state(OrderStates.entering_phone)
+    
+    text = (
+        f"{format_order_progress(5)}\n\n"
         f"✅ Имя: {order.customer.name}\n\n"
         "📞 <b>Контактный телефон</b>\n\n"
         "Введите номер телефона:"
     )
     
-    if is_callback:
-        if saved_data and saved_data.get("phone"):
-            await message_or_callback.edit_text(
-                text,
-                reply_markup=get_use_saved_keyboard("phone", saved_data["phone"])
-            )
-        else:
-            await message_or_callback.edit_text(text)
-    else:
-        if saved_data and saved_data.get("phone"):
-            await message_or_callback.answer(
-                text,
-                reply_markup=get_use_saved_keyboard("phone", saved_data["phone"])
-            )
-        else:
-            await message_or_callback.answer(text)
+    await callback.message.edit_text(text, reply_markup=get_phone_input_keyboard())
+
+
+@router.callback_query(F.data == "order:use_saved:phone")
+async def handle_use_saved_phone(callback: CallbackQuery, state: FSMContext) -> None:
+    """Use saved phone."""
+    await callback.answer()
+    data = await state.get_data()
+    saved_phone = data.get("saved_phone")
+    
+    if saved_phone:
+        order = await get_or_create_order(state)
+        order.customer.phone = saved_phone
+        await save_order_to_state(state, order)
+    
+    await proceed_to_company(callback.message, state, is_callback=True)
+
+
+@router.callback_query(F.data == "order:enter_new:phone")
+async def handle_enter_new_phone(callback: CallbackQuery, state: FSMContext) -> None:
+    """Enter new phone instead of saved."""
+    await callback.answer()
+    await state.set_state(OrderStates.entering_phone)
+    await callback.message.edit_text(
+        f"{format_order_progress(5)}\n\n"
+        "📞 <b>Контактный телефон</b>\n\n"
+        "Введите номер телефона:",
+        reply_markup=get_phone_input_keyboard()
+    )
 
 
 @router.message(OrderStates.entering_phone)
@@ -774,23 +992,53 @@ async def handle_phone_input(message: Message, state: FSMContext) -> None:
     is_valid, phone, error = PhoneValidator.validate(message.text)
     
     if not is_valid:
-        await message.answer(f"❌ {error}\n\nПопробуйте ещё раз:")
+        await message.answer(
+            f"❌ {error}\n\nПопробуйте ещё раз:",
+            reply_markup=get_phone_input_keyboard()
+        )
         return
     
     order = await get_or_create_order(state)
     order.customer.phone = phone
     await save_order_to_state(state, order)
     
+    await proceed_to_company(message, state, is_callback=False)
+
+
+async def proceed_to_company(message_or_callback, state: FSMContext, is_callback: bool = False) -> None:
+    """Proceed to company input."""
     await state.set_state(OrderStates.entering_company)
     
+    order = await get_or_create_order(state)
+    
     text = (
-        f"{format_order_progress(3)}\n\n"
-        f"✅ Телефон: {phone}\n\n"
+        f"{format_order_progress(5)}\n\n"
+        f"✅ Телефон: {order.customer.phone}\n\n"
         "🏢 <b>Компания</b> (необязательно)\n\n"
         "Введите название компании или нажмите 'Пропустить':"
     )
     
-    await message.answer(text, reply_markup=get_skip_keyboard("company"))
+    if is_callback:
+        await message_or_callback.edit_text(text, reply_markup=get_skip_keyboard("company"))
+    else:
+        await message_or_callback.answer(text, reply_markup=get_skip_keyboard("company"))
+
+
+@router.callback_query(F.data == "order:back_to_company")
+async def handle_back_to_company(callback: CallbackQuery, state: FSMContext) -> None:
+    """Go back to company input."""
+    await callback.answer()
+    order = await get_or_create_order(state)
+    await state.set_state(OrderStates.entering_company)
+    
+    text = (
+        f"{format_order_progress(5)}\n\n"
+        f"✅ Телефон: {order.customer.phone}\n\n"
+        "🏢 <b>Компания</b> (необязательно)\n\n"
+        "Введите название компании или нажмите 'Пропустить':"
+    )
+    
+    await callback.message.edit_text(text, reply_markup=get_skip_keyboard("company"))
 
 
 @router.callback_query(F.data == "order:skip:company")
@@ -810,12 +1058,16 @@ async def handle_company_input(message: Message, state: FSMContext) -> None:
     await proceed_to_comment(message, state, is_callback=False)
 
 
+# =============================================================================
+# STEP 6: COMMENT + FINAL CONFIRMATION
+# =============================================================================
+
 async def proceed_to_comment(message_or_callback, state: FSMContext, is_callback: bool = False) -> None:
     """Proceed to comment input."""
     await state.set_state(OrderStates.entering_comment)
     
     text = (
-        f"{format_order_progress(4)}\n\n"
+        f"{format_order_progress(6)}\n\n"
         "💬 <b>Комментарий к заказу</b> (необязательно)\n\n"
         "Укажите дополнительные пожелания или нажмите 'Пропустить':"
     )
@@ -843,19 +1095,15 @@ async def handle_comment_input(message: Message, state: FSMContext) -> None:
     await show_final_confirmation(message, state, is_callback=False)
 
 
-# =============================================================================
-# FINAL CONFIRMATION
-# =============================================================================
-
 async def show_final_confirmation(message_or_callback, state: FSMContext, is_callback: bool = False) -> None:
     """Show final order summary for confirmation."""
     await state.set_state(OrderStates.final_confirmation)
     order = await get_or_create_order(state)
     
     text = (
-        f"{format_order_progress(5)}\n\n"
+        "✅ <b>Проверьте заказ</b>\n\n"
         f"{order.format_full_summary()}\n\n"
-        "Проверьте заказ и подтвердите отправку:"
+        "Подтвердите отправку заявки:"
     )
     
     if is_callback:
@@ -863,6 +1111,10 @@ async def show_final_confirmation(message_or_callback, state: FSMContext, is_cal
     else:
         await message_or_callback.answer(text, reply_markup=get_final_confirmation_keyboard())
 
+
+# =============================================================================
+# SUBMIT ORDER
+# =============================================================================
 
 @router.callback_query(F.data == "order:submit")
 async def handle_order_submit(callback: CallbackQuery, state: FSMContext) -> None:
@@ -965,51 +1217,91 @@ async def handle_continue_order(callback: CallbackQuery, state: FSMContext) -> N
 
 
 # =============================================================================
-# BACK NAVIGATION
+# EDIT FROM FINAL CONFIRMATION
 # =============================================================================
 
-@router.callback_query(F.data == "order:back_to_delivery")
-async def handle_back_to_delivery(callback: CallbackQuery, state: FSMContext) -> None:
-    """Go back to delivery type selection."""
+@router.callback_query(F.data == "order:edit:items")
+async def handle_edit_items(callback: CallbackQuery, state: FSMContext) -> None:
+    """Edit items from final confirmation."""
     await callback.answer()
-    await state.set_state(OrderStates.selecting_delivery_type)
+    order = await get_or_create_order(state)
+    await state.set_state(OrderStates.confirming_items)
+    
+    text = (
+        "📦 <b>Редактирование товаров</b>\n\n"
+        f"{order.format_items_summary()}\n\n"
+        f"<b>Итого:</b> {order.total_quantity:.0f} кг — {order.total_price:.0f} ₽"
+    )
+    
+    await callback.message.edit_text(text, reply_markup=get_items_confirmation_keyboard(order))
+
+
+@router.callback_query(F.data == "order:edit:packaging")
+async def handle_edit_packaging(callback: CallbackQuery, state: FSMContext) -> None:
+    """Edit packaging from final confirmation."""
+    await callback.answer()
+    await state.set_state(OrderStates.selecting_packaging)
     
     text = (
         f"{format_order_progress(1)}\n\n"
-        "🚚 <b>Способ получения</b>\n\n"
+        "📦 <b>Изменить упаковку</b>\n\n"
+        "Выберите тип упаковки:"
+    )
+    
+    await callback.message.edit_text(text, reply_markup=get_packaging_type_keyboard())
+
+
+@router.callback_query(F.data == "order:edit:delivery")
+async def handle_edit_delivery(callback: CallbackQuery, state: FSMContext) -> None:
+    """Edit delivery from final confirmation."""
+    await callback.answer()
+    await state.set_state(OrderStates.selecting_delivery_type)
+    
+    order = await get_or_create_order(state)
+    pkg_info = order.packaging.format_summary() if order.packaging else "Любая"
+    
+    text = (
+        f"{format_order_progress(3)}\n\n"
+        f"✅ Упаковка: {pkg_info}\n\n"
+        "🚚 <b>Изменить способ получения</b>\n\n"
         "Как вы хотите получить заказ?"
     )
     
     await callback.message.edit_text(text, reply_markup=get_delivery_type_keyboard())
 
 
-@router.callback_query(F.data == "order:back_to_date")
-async def handle_back_to_date(callback: CallbackQuery, state: FSMContext) -> None:
-    """Go back to date selection."""
+@router.callback_query(F.data == "order:edit:contact")
+async def handle_edit_contact(callback: CallbackQuery, state: FSMContext) -> None:
+    """Edit contact from final confirmation."""
     await callback.answer()
-    await state.set_state(OrderStates.entering_date)
+    await state.set_state(OrderStates.entering_name)
     
-    order = await get_or_create_order(state)
+    text = (
+        f"{format_order_progress(5)}\n\n"
+        "👤 <b>Изменить контактные данные</b>\n\n"
+        "Как к вам обращаться?"
+    )
     
-    if order.delivery.delivery_type == DeliveryType.PICKUP:
-        text = (
-            f"{format_order_progress(2)}\n\n"
-            "🏪 <b>Самовывоз</b>\n\n"
-            "📍 Адрес склада: г. Киров, пер. Энгельса, 2\n\n"
-            "📅 Выберите желаемую дату:"
-        )
-    else:
-        text = (
-            f"{format_order_progress(2)}\n\n"
-            f"📍 Адрес: {order.delivery.address}\n\n"
-            "📅 Выберите желаемую дату доставки:"
-        )
+    await callback.message.edit_text(text, reply_markup=get_name_input_keyboard())
+
+
+@router.callback_query(F.data == "order:edit:comment")
+async def handle_edit_comment(callback: CallbackQuery, state: FSMContext) -> None:
+    """Edit comment from final confirmation."""
+    await callback.answer()
+    await state.set_state(OrderStates.entering_comment)
     
-    await callback.message.edit_text(text, reply_markup=get_date_quick_keyboard())
+    text = (
+        f"{format_order_progress(6)}\n\n"
+        "💬 <b>Изменить комментарий</b>\n\n"
+        "Введите комментарий к заказу:"
+    )
+    
+    await callback.message.edit_text(text, reply_markup=get_skip_keyboard("comment"))
 
 
 # =============================================================================
-# MISSING HANDLERS - ADD MORE, EDIT, NEW ORDER
+# ADD ITEMS
 # =============================================================================
 
 @router.callback_query(F.data == "order:add_more")
@@ -1036,91 +1328,103 @@ async def handle_add_item(callback: CallbackQuery, state: FSMContext) -> None:
     )
 
 
+async def parse_item_from_text(text: str) -> Optional[dict]:
+    """
+    Parse item from user text input.
+    Returns dict with name, quantity, price, category, product_form or None.
+    """
+    import re
+    from src.core.rag.retriever import get_retriever
+    
+    # Extract quantity (number + optional "кг")
+    qty_match = re.search(r'(\d+(?:[.,]\d+)?)\s*(?:кг|килограмм)?', text, re.IGNORECASE)
+    if not qty_match:
+        return None
+    
+    quantity = float(qty_match.group(1).replace(',', '.'))
+    if quantity <= 0 or quantity > 1000:
+        return None
+    
+    # Remove quantity from text to get product name
+    product_text = re.sub(r'\d+(?:[.,]\d+)?\s*(?:кг|килограмм)?', '', text, flags=re.IGNORECASE).strip()
+    product_text = re.sub(r'\s+', ' ', product_text)  # Normalize spaces
+    
+    if len(product_text) < 2:
+        return None
+    
+    # Search for product in database
+    retriever = get_retriever()
+    result = await retriever.retrieve(query=product_text, top_k=3)
+    
+    if not result.products or result.scores[0] < 0.5:
+        return None
+    
+    # Take best match
+    product = result.products[0]
+    
+    return {
+        "name": product.get("name"),
+        "quantity": quantity,
+        "price": product.get("price", 0),
+        "category": product.get("category", ""),
+        "product_form": product.get("product_form", "Замороженные"),
+        "origin_country": product.get("origin_country"),
+    }
+
+
 @router.message(OrderStates.collecting_items)
 async def handle_collecting_items(message: Message, state: FSMContext) -> None:
     """Handle adding items in collecting state."""
     text = message.text.strip().lower()
     
-    if text in ["готово", "далее", "продолжить", "хватит"]:
+    # Check for "done" commands
+    if text in ["готово", "далее", "продолжить", "хватит", "всё", "все"]:
         order = await get_or_create_order(state)
         if not order.items:
             await message.answer("❌ В заказе нет товаров. Добавьте хотя бы один товар.")
             return
         
         await state.set_state(OrderStates.confirming_items)
-        text = (
+        response_text = (
             "📦 <b>Товары в заказе</b>\n\n"
             f"{order.format_items_summary()}\n\n"
             f"<b>Итого:</b> {order.total_quantity:.0f} кг — {order.total_price:.0f} ₽"
         )
-        await message.answer(text, reply_markup=get_items_confirmation_keyboard(order))
+        await message.answer(response_text, reply_markup=get_items_confirmation_keyboard(order))
         return
     
     # Try to parse item from message
-    # This is simplified - in production would use LLM
-    await message.answer(
-        "Для добавления товара используйте формат:\n"
-        "«название товара количество кг»\n\n"
-        "Или напишите «готово» чтобы продолжить оформление."
-    )
-
-
-@router.callback_query(F.data == "order:edit:items")
-async def handle_edit_items(callback: CallbackQuery, state: FSMContext) -> None:
-    """Edit items from final confirmation."""
-    await callback.answer()
-    order = await get_or_create_order(state)
-    await state.set_state(OrderStates.confirming_items)
+    item_data = await parse_item_from_text(message.text)
     
-    text = (
-        "📦 <b>Редактирование товаров</b>\n\n"
-        f"{order.format_items_summary()}\n\n"
-        f"<b>Итого:</b> {order.total_quantity:.0f} кг — {order.total_price:.0f} ₽"
-    )
-    
-    await callback.message.edit_text(text, reply_markup=get_items_confirmation_keyboard(order))
-
-
-@router.callback_query(F.data == "order:edit:delivery")
-async def handle_edit_delivery(callback: CallbackQuery, state: FSMContext) -> None:
-    """Edit delivery from final confirmation."""
-    await callback.answer()
-    await state.set_state(OrderStates.selecting_delivery_type)
-    
-    text = (
-        "🚚 <b>Изменить способ получения</b>\n\n"
-        "Как вы хотите получить заказ?"
-    )
-    
-    await callback.message.edit_text(text, reply_markup=get_delivery_type_keyboard())
-
-
-@router.callback_query(F.data == "order:edit:contact")
-async def handle_edit_contact(callback: CallbackQuery, state: FSMContext) -> None:
-    """Edit contact from final confirmation."""
-    await callback.answer()
-    await state.set_state(OrderStates.entering_name)
-    
-    text = (
-        "👤 <b>Изменить контактные данные</b>\n\n"
-        "Как к вам обращаться?"
-    )
-    
-    await callback.message.edit_text(text)
-
-
-@router.callback_query(F.data == "order:edit:comment")
-async def handle_edit_comment(callback: CallbackQuery, state: FSMContext) -> None:
-    """Edit comment from final confirmation."""
-    await callback.answer()
-    await state.set_state(OrderStates.entering_comment)
-    
-    text = (
-        "💬 <b>Изменить комментарий</b>\n\n"
-        "Введите комментарий к заказу:"
-    )
-    
-    await callback.message.edit_text(text, reply_markup=get_skip_keyboard("comment"))
+    if item_data:
+        # Add item to order
+        order = await get_or_create_order(state)
+        order.add_item(OrderItem(
+            product_name=item_data["name"],
+            category=item_data.get("category", ""),
+            product_form=item_data.get("product_form", "Замороженные"),
+            quantity_kg=item_data["quantity"],
+            price_per_kg=item_data["price"],
+            origin_country=item_data.get("origin_country"),
+        ))
+        await save_order_to_state(state, order)
+        
+        item_total = item_data["quantity"] * item_data["price"]
+        await message.answer(
+            f"✅ Добавлено: <b>{item_data['name']}</b> — {item_data['quantity']:.0f} кг × {item_data['price']:.0f} ₽ = {item_total:.0f} ₽\n\n"
+            f"📦 Всего в заказе: {order.total_quantity:.0f} кг — {order.total_price:.0f} ₽\n\n"
+            "Добавьте ещё товар или напишите «готово»."
+        )
+    else:
+        # Could not parse
+        await message.answer(
+            "❌ Не удалось найти товар.\n\n"
+            "Попробуйте написать иначе, например:\n"
+            "• «черника 20 кг»\n"
+            "• «малина 15»\n"
+            "• «облепиха 10 кг»\n\n"
+            "Или напишите «готово» чтобы продолжить оформление."
+        )
 
 
 @router.callback_query(F.data == "order:new")
@@ -1139,7 +1443,6 @@ async def handle_new_order(callback: CallbackQuery, state: FSMContext) -> None:
 async def handle_contact_manager(callback: CallbackQuery, state: FSMContext) -> None:
     """Show manager contact info."""
     await callback.answer()
-    from src.config import settings
     
     await callback.message.answer(
         "📞 <b>Свяжитесь с нами:</b>\n\n"
@@ -1147,4 +1450,45 @@ async def handle_contact_manager(callback: CallbackQuery, state: FSMContext) -> 
         f"📱 WhatsApp: {settings.escalation_whatsapp}\n"
         f"📧 Email: {settings.escalation_email}\n\n"
         "📍 Адрес: г. Киров, пер. Энгельса, 2"
+    )
+
+
+# =============================================================================
+# SAVED DATA HANDLERS
+# =============================================================================
+
+@router.callback_query(F.data == "order:use_saved:address")
+async def handle_use_saved_address(callback: CallbackQuery, state: FSMContext) -> None:
+    """Use saved address."""
+    await callback.answer()
+    data = await state.get_data()
+    saved_address = data.get("saved_address")
+    
+    if saved_address:
+        order = await get_or_create_order(state)
+        order.delivery.address = saved_address
+        await save_order_to_state(state, order)
+    
+    await state.set_state(OrderStates.entering_date)
+    
+    text = (
+        f"{format_order_progress(4)}\n\n"
+        f"✅ Адрес: {saved_address}\n\n"
+        "📅 Выберите желаемую дату доставки:"
+    )
+    
+    await callback.message.edit_text(text, reply_markup=get_date_quick_keyboard())
+
+
+@router.callback_query(F.data == "order:enter_new:address")
+async def handle_enter_new_address(callback: CallbackQuery, state: FSMContext) -> None:
+    """Enter new address instead of saved."""
+    await callback.answer()
+    await state.set_state(OrderStates.entering_address)
+    await callback.message.edit_text(
+        f"{format_order_progress(4)}\n\n"
+        "📍 <b>Адрес доставки</b>\n\n"
+        "Введите полный адрес:\n"
+        "(город, улица, дом, офис/квартира)",
+        reply_markup=get_address_input_keyboard()
     )

@@ -29,10 +29,12 @@ async def handle_message(message: Message, state: FSMContext) -> None:
     if not user_query:
         return
     
-    # Check if user is in order FSM state - skip regular processing
+    # Check if user is in ANY order FSM state - skip ALL processing, let order handlers deal with it
     current_state = await state.get_state()
-    if current_state and current_state.startswith("OrderStates:"):
-        # Let order handlers process this
+    if current_state and "OrderStates" in str(current_state):
+        # User is in order flow - don't interfere
+        # Order handlers will process this message
+        logger.debug(f"User {message.from_user.id} in order state {current_state}, skipping price_query handler")
         return
 
     # Get user info

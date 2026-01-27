@@ -10,6 +10,8 @@ from src.core.orders.models import (
     CustomerInfo,
     DeliveryInfo,
     DeliveryType,
+    PackagingInfo,
+    PackagingType,
 )
 from src.core.orders.states import OrderStates
 from src.core.orders.validators import (
@@ -30,6 +32,8 @@ __all__ = [
     "CustomerInfo",
     "DeliveryInfo",
     "DeliveryType",
+    "PackagingInfo",
+    "PackagingType",
     # States
     "OrderStates",
     # Validators

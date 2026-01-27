@@ -26,6 +26,13 @@ class DeliveryType(Enum):
     PICKUP = "pickup"           # Самовывоз
 
 
+class PackagingType(Enum):
+    """Packaging type enum."""
+    BOX = "box"                 # Коробка
+    BAG = "bag"                 # Мешок
+    ANY = "any"                 # Любая (на усмотрение склада)
+
+
 @dataclass
 class OrderItem:
     """Single item in order."""
@@ -52,6 +59,32 @@ class OrderItem:
             "total_price": self.total_price,
             "origin_country": self.origin_country,
         }
+
+
+@dataclass
+class PackagingInfo:
+    """Packaging information."""
+    packaging_type: PackagingType = PackagingType.ANY
+    weight_per_unit: Optional[float] = None  # кг в одном тарном месте
+    
+    def to_dict(self) -> dict:
+        """Convert to dictionary."""
+        return {
+            "packaging_type": self.packaging_type.value,
+            "weight_per_unit": self.weight_per_unit,
+        }
+    
+    def format_summary(self) -> str:
+        """Format packaging as text."""
+        type_names = {
+            PackagingType.BOX: "Коробка",
+            PackagingType.BAG: "Мешок",
+            PackagingType.ANY: "Любая",
+        }
+        result = type_names.get(self.packaging_type, "Любая")
+        if self.weight_per_unit:
+            result += f" по {self.weight_per_unit:.0f} кг"
+        return result
 
 
 @dataclass
@@ -114,6 +147,7 @@ class Order:
     items: list[OrderItem] = field(default_factory=list)
     customer: Optional[CustomerInfo] = None
     delivery: Optional[DeliveryInfo] = None
+    packaging: Optional[PackagingInfo] = None
     comment: Optional[str] = None
     
     # Metadata
@@ -181,6 +215,7 @@ class Order:
             "items": [item.to_dict() for item in self.items],
             "customer": self.customer.to_dict() if self.customer else None,
             "delivery": self.delivery.to_dict() if self.delivery else None,
+            "packaging": self.packaging.to_dict() if self.packaging else None,
             "comment": self.comment,
             "total_quantity": self.total_quantity,
             "total_price": self.total_price,
@@ -209,6 +244,11 @@ class Order:
             "",
             f"<b>Итого:</b> {self.total_quantity:.0f} кг — {self.total_price:.0f} ₽",
         ]
+        
+        # Packaging info
+        if self.packaging:
+            lines.append("")
+            lines.append(f"📦 <b>Упаковка:</b> {self.packaging.format_summary()}")
         
         if self.delivery:
             lines.append("")

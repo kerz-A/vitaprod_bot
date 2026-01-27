@@ -85,6 +85,48 @@ def get_delete_confirmation_keyboard(item_index: int) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def get_packaging_type_keyboard() -> InlineKeyboardMarkup:
+    """Keyboard for packaging type selection."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="📦 Коробка", callback_data="order:packaging:box"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="👝 Мешок", callback_data="order:packaging:bag"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="🔄 Любая (на усмотрение склада)", callback_data="order:packaging:any"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="⬅️ Назад к товарам", callback_data="order:back_to_items"),
+    )
+    return builder.as_markup()
+
+
+def get_package_weight_keyboard() -> InlineKeyboardMarkup:
+    """Keyboard for package weight selection."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="10 кг", callback_data="order:pkg_weight:10"),
+        InlineKeyboardButton(text="15 кг", callback_data="order:pkg_weight:15"),
+        InlineKeyboardButton(text="20 кг", callback_data="order:pkg_weight:20"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="25 кг", callback_data="order:pkg_weight:25"),
+        InlineKeyboardButton(text="30 кг", callback_data="order:pkg_weight:30"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="📝 Другой вес", callback_data="order:pkg_weight:custom"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="⏭️ На усмотрение склада", callback_data="order:pkg_weight:any"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="⬅️ Назад", callback_data="order:back_to_packaging"),
+    )
+    return builder.as_markup()
+
+
 def get_delivery_type_keyboard() -> InlineKeyboardMarkup:
     """Keyboard for delivery type selection."""
     builder = InlineKeyboardBuilder()
@@ -95,7 +137,16 @@ def get_delivery_type_keyboard() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🏪 Самовывоз", callback_data="order:delivery:pickup"),
     )
     builder.row(
-        InlineKeyboardButton(text="⬅️ Назад", callback_data="order:back_to_items"),
+        InlineKeyboardButton(text="⬅️ Назад", callback_data="order:back_to_packaging"),
+    )
+    return builder.as_markup()
+
+
+def get_address_input_keyboard() -> InlineKeyboardMarkup:
+    """Keyboard for address input with back button."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="⬅️ Назад", callback_data="order:back_to_delivery"),
     )
     return builder.as_markup()
 
@@ -190,12 +241,39 @@ def get_weekend_warning_keyboard(selected_date: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def get_name_input_keyboard() -> InlineKeyboardMarkup:
+    """Keyboard for name input with back button."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="⬅️ Назад", callback_data="order:back_to_time"),
+    )
+    return builder.as_markup()
+
+
+def get_phone_input_keyboard() -> InlineKeyboardMarkup:
+    """Keyboard for phone input with back button."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="⬅️ Назад", callback_data="order:back_to_name"),
+    )
+    return builder.as_markup()
+
+
 def get_skip_keyboard(field: str) -> InlineKeyboardMarkup:
     """Keyboard with skip option."""
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text="⏭️ Пропустить", callback_data=f"order:skip:{field}"),
     )
+    # Add back button based on field
+    if field == "company":
+        builder.row(
+            InlineKeyboardButton(text="⬅️ Назад", callback_data="order:back_to_phone"),
+        )
+    elif field == "comment":
+        builder.row(
+            InlineKeyboardButton(text="⬅️ Назад", callback_data="order:back_to_company"),
+        )
     return builder.as_markup()
 
 
@@ -226,10 +304,13 @@ def get_final_confirmation_keyboard() -> InlineKeyboardMarkup:
     )
     builder.row(
         InlineKeyboardButton(text="✏️ Товары", callback_data="order:edit:items"),
-        InlineKeyboardButton(text="📍 Доставка", callback_data="order:edit:delivery"),
+        InlineKeyboardButton(text="📦 Упаковка", callback_data="order:edit:packaging"),
     )
     builder.row(
+        InlineKeyboardButton(text="📍 Доставка", callback_data="order:edit:delivery"),
         InlineKeyboardButton(text="👤 Контакты", callback_data="order:edit:contact"),
+    )
+    builder.row(
         InlineKeyboardButton(text="💬 Комментарий", callback_data="order:edit:comment"),
     )
     builder.row(
