@@ -1328,25 +1328,32 @@ async def handle_add_item(callback: CallbackQuery, state: FSMContext) -> None:
     )
 
 
-async def parse_item_from_text(text: str) -> Optional[dict]:
+async def parse_item_from_text(text: str) -> dict:
     """
     Parse item from user text input.
-    Returns dict with name, quantity, price, category, product_form or None.
+    Returns dict with:
+    - name, quantity, price, category, product_form - if fully parsed
+    - name, price, category, product_form, needs_quantity=True - if only product found
+    - None if nothing found
     """
     import re
     from src.core.rag.retriever import get_retriever
     
     # Extract quantity (number + optional "кг")
     qty_match = re.search(r'(\d+(?:[.,]\d+)?)\s*(?:кг|килограмм)?', text, re.IGNORECASE)
-    if not qty_match:
-        return None
     
-    quantity = float(qty_match.group(1).replace(',', '.'))
-    if quantity <= 0 or quantity > 1000:
-        return None
+    quantity = None
+    if qty_match:
+        quantity = float(qty_match.group(1).replace(',', '.'))
+        if quantity <= 0 or quantity > 1000:
+            quantity = None
     
     # Remove quantity from text to get product name
-    product_text = re.sub(r'\d+(?:[.,]\d+)?\s*(?:кг|килограмм)?', '', text, flags=re.IGNORECASE).strip()
+    if qty_match:
+        product_text = re.sub(r'\d+(?:[.,]\d+)?\s*(?:кг|килограмм)?', '', text, flags=re.IGNORECASE).strip()
+    else:
+        product_text = text.strip()
+    
     product_text = re.sub(r'\s+', ' ', product_text)  # Normalize spaces
     
     if len(product_text) < 2:
@@ -1362,14 +1369,21 @@ async def parse_item_from_text(text: str) -> Optional[dict]:
     # Take best match
     product = result.products[0]
     
-    return {
+    result_dict = {
         "name": product.get("name"),
-        "quantity": quantity,
         "price": product.get("price", 0),
         "category": product.get("category", ""),
         "product_form": product.get("product_form", "Замороженные"),
         "origin_country": product.get("origin_country"),
     }
+    
+    if quantity:
+        result_dict["quantity"] = quantity
+        result_dict["needs_quantity"] = False
+    else:
+        result_dict["needs_quantity"] = True
+    
+    return result_dict
 
 
 @router.message(OrderStates.collecting_items)
@@ -1393,28 +1407,79 @@ async def handle_collecting_items(message: Message, state: FSMContext) -> None:
         await message.answer(response_text, reply_markup=get_items_confirmation_keyboard(order))
         return
     
+    # Check if we're waiting for quantity input
+    data = await state.get_data()
+    pending_item = data.get("pending_item")
+    
+    if pending_item:
+        # User was asked for quantity - try to parse it
+        import re
+        qty_match = re.search(r'(\d+(?:[.,]\d+)?)', message.text)
+        
+        if qty_match:
+            quantity = float(qty_match.group(1).replace(',', '.'))
+            if 0 < quantity <= 1000:
+                # Add item with quantity
+                order = await get_or_create_order(state)
+                order.add_item(OrderItem(
+                    product_name=pending_item["name"],
+                    category=pending_item.get("category", ""),
+                    product_form=pending_item.get("product_form", "Замороженные"),
+                    quantity_kg=quantity,
+                    price_per_kg=pending_item["price"],
+                    origin_country=pending_item.get("origin_country"),
+                ))
+                await save_order_to_state(state, order)
+                
+                # Clear pending item
+                await state.update_data(pending_item=None)
+                
+                item_total = quantity * pending_item["price"]
+                await message.answer(
+                    f"✅ Добавлено: <b>{pending_item['name']}</b> — {quantity:.0f} кг × {pending_item['price']:.0f} ₽ = {item_total:.0f} ₽\n\n"
+                    f"📦 Всего в заказе: {order.total_quantity:.0f} кг — {order.total_price:.0f} ₽\n\n"
+                    "Добавьте ещё товар или напишите «готово»."
+                )
+                return
+        
+        # Invalid quantity input
+        await message.answer(
+            f"❌ Не понял количество.\n\n"
+            f"Сколько кг <b>{pending_item['name']}</b> вам нужно?\n"
+            f"Просто напишите число, например: 10"
+        )
+        return
+    
     # Try to parse item from message
     item_data = await parse_item_from_text(message.text)
     
     if item_data:
-        # Add item to order
-        order = await get_or_create_order(state)
-        order.add_item(OrderItem(
-            product_name=item_data["name"],
-            category=item_data.get("category", ""),
-            product_form=item_data.get("product_form", "Замороженные"),
-            quantity_kg=item_data["quantity"],
-            price_per_kg=item_data["price"],
-            origin_country=item_data.get("origin_country"),
-        ))
-        await save_order_to_state(state, order)
-        
-        item_total = item_data["quantity"] * item_data["price"]
-        await message.answer(
-            f"✅ Добавлено: <b>{item_data['name']}</b> — {item_data['quantity']:.0f} кг × {item_data['price']:.0f} ₽ = {item_total:.0f} ₽\n\n"
-            f"📦 Всего в заказе: {order.total_quantity:.0f} кг — {order.total_price:.0f} ₽\n\n"
-            "Добавьте ещё товар или напишите «готово»."
-        )
+        if item_data.get("needs_quantity"):
+            # Found product but no quantity - ask for it
+            await state.update_data(pending_item=item_data)
+            await message.answer(
+                f"✅ Нашёл: <b>{item_data['name']}</b> — {item_data['price']:.0f} ₽/кг\n\n"
+                f"Сколько килограмм вам нужно?"
+            )
+        else:
+            # Add item to order
+            order = await get_or_create_order(state)
+            order.add_item(OrderItem(
+                product_name=item_data["name"],
+                category=item_data.get("category", ""),
+                product_form=item_data.get("product_form", "Замороженные"),
+                quantity_kg=item_data["quantity"],
+                price_per_kg=item_data["price"],
+                origin_country=item_data.get("origin_country"),
+            ))
+            await save_order_to_state(state, order)
+            
+            item_total = item_data["quantity"] * item_data["price"]
+            await message.answer(
+                f"✅ Добавлено: <b>{item_data['name']}</b> — {item_data['quantity']:.0f} кг × {item_data['price']:.0f} ₽ = {item_total:.0f} ₽\n\n"
+                f"📦 Всего в заказе: {order.total_quantity:.0f} кг — {order.total_price:.0f} ₽\n\n"
+                "Добавьте ещё товар или напишите «готово»."
+            )
     else:
         # Could not parse
         await message.answer(
@@ -1422,7 +1487,7 @@ async def handle_collecting_items(message: Message, state: FSMContext) -> None:
             "Попробуйте написать иначе, например:\n"
             "• «черника 20 кг»\n"
             "• «малина 15»\n"
-            "• «облепиха 10 кг»\n\n"
+            "• «морошка»\n\n"
             "Или напишите «готово» чтобы продолжить оформление."
         )
 
