@@ -41,6 +41,9 @@ env/
 .env
 .env.local
 .env.*.local
+.env
+*.env
+!.env.example
 
 # Database
 *.db
@@ -51,6 +54,7 @@ env/
 data/prices/*.pdf
 data/prices/*.xlsx
 data/prices/*.xls
+data/orders/*.xlsx
 
 # Logs
 *.log

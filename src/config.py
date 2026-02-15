@@ -43,6 +43,46 @@ class Settings(BaseSettings):
     yandex_api_key: Optional[str] = Field(default=None, description="Yandex API key")
     yandex_folder_id: Optional[str] = Field(default=None, description="Yandex folder ID")
 
+    # ==========================================================================
+    # Speech-to-Text (STT) settings
+    # ==========================================================================
+    
+    # Groq Whisper API (FREE, recommended!)
+    groq_api_key: Optional[str] = Field(
+        default=None, 
+        description="Groq API key for Whisper STT (FREE tier available)"
+    )
+    
+    # OpenAI Whisper API ($0.006/min)
+    openai_api_key: Optional[str] = Field(
+        default=None, 
+        description="OpenAI API key for Whisper STT"
+    )
+    
+    # Deepgram API (~$0.0043/min)
+    deepgram_api_key: Optional[str] = Field(
+        default=None,
+        description="Deepgram API key for STT"
+    )
+    
+    # Whisper model selection (for Groq)
+    whisper_model: str = Field(
+        default="whisper-large-v3",
+        description="Whisper model to use (whisper-large-v3, whisper-large-v3-turbo)"
+    )
+    
+    # STT provider selection
+    stt_provider: Literal["groq", "openai", "deepgram", "local"] = Field(
+        default="groq",
+        description="Speech-to-Text provider to use"
+    )
+    
+    # Voice message settings
+    max_voice_duration: int = Field(
+        default=300,
+        description="Maximum voice message duration in seconds (default: 5 min)"
+    )
+
     # Qdrant
     qdrant_host: str = Field(default="localhost", description="Qdrant host")
     qdrant_port: int = Field(default=6333, description="Qdrant port")
@@ -138,6 +178,11 @@ class Settings(BaseSettings):
         if self.manager_telegram_id_2:
             ids.append(self.manager_telegram_id_2)
         return ids
+    
+    @property
+    def has_stt_configured(self) -> bool:
+        """Check if any STT provider is configured."""
+        return bool(self.groq_api_key or self.openai_api_key or self.deepgram_api_key)
 
 
 # Global settings instance
