@@ -182,8 +182,8 @@ class PriceLoader:
                 text += f" {p.origin_country}"
             texts.append(text)
 
-        # Generate embeddings
-        embeddings = self.embedding_service.encode(texts)
+        # FIX BUG #1: Use encode_documents() with "passage:" prefix for E5
+        embeddings = self.embedding_service.encode_documents(texts)
 
         # Prepare payloads
         payloads = [

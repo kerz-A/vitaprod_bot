@@ -25,10 +25,16 @@ class EmbeddingService:
             self._model = SentenceTransformer(self.model_name)
         return self._model
 
+    @property
+    def _is_e5_model(self) -> bool:
+        """Check if current model is E5 family."""
+        return "e5" in self.model_name.lower()
+
     def encode(
         self,
         texts: str | list[str],
         normalize: bool = True,
+        prefix: str | None = None,
     ) -> np.ndarray:
         """
         Generate embeddings for texts.
@@ -36,6 +42,8 @@ class EmbeddingService:
         Args:
             texts: Single text or list of texts
             normalize: Whether to L2-normalize vectors
+            prefix: Override prefix for E5 models ('query: ' or 'passage: ')
+                    If None, no prefix is added (backward compat).
 
         Returns:
             Numpy array of shape (n_texts, embedding_dim)
@@ -43,9 +51,9 @@ class EmbeddingService:
         if isinstance(texts, str):
             texts = [texts]
 
-        # Add instruction prefix for E5 models
-        if "e5" in self.model_name.lower():
-            texts = [f"query: {t}" for t in texts]
+        # FIX BUG #1: Add explicit prefix support for E5 models
+        if prefix and self._is_e5_model:
+            texts = [f"{prefix}{t}" for t in texts]
 
         embeddings = self.model.encode(
             texts,
@@ -56,9 +64,13 @@ class EmbeddingService:
         return embeddings
 
     def encode_query(self, query: str) -> list[float]:
-        """Encode a single query and return as list."""
-        embedding = self.encode(query)
+        """Encode a search QUERY (uses 'query: ' prefix for E5)."""
+        embedding = self.encode(query, prefix="query: ")
         return embedding[0].tolist()
+
+    def encode_documents(self, texts: str | list[str]) -> np.ndarray:
+        """Encode DOCUMENTS/passages for indexing (uses 'passage: ' prefix for E5)."""
+        return self.encode(texts, prefix="passage: ")
 
     @property
     def dimension(self) -> int:

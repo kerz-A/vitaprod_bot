@@ -14,18 +14,17 @@ def get_llm_provider(provider: str | None = None) -> BaseLLM:
     Get LLM provider instance.
 
     Args:
-        provider: Provider name ('gigachat', 'yandexgpt')
+        provider: Provider name ('gigachat', 'groq', 'yandexgpt')
                   If None, uses settings.llm_provider
-
-    Returns:
-        LLM provider instance
     """
     provider = provider or settings.llm_provider
 
     if provider == "gigachat":
         return GigaChatLLM()
+    elif provider == "groq":
+        from src.integrations.llm.groq import GroqLLM
+        return GroqLLM()
     elif provider == "yandexgpt":
-        # TODO: Implement YandexGPT when needed
         raise NotImplementedError("YandexGPT not implemented yet")
     else:
         raise ValueError(f"Unknown LLM provider: {provider}")

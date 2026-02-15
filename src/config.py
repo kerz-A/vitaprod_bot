@@ -26,8 +26,8 @@ class Settings(BaseSettings):
     # Telegram
     telegram_bot_token: str = Field(..., description="Telegram Bot API token")
 
-    # LLM Provider
-    llm_provider: Literal["gigachat", "yandexgpt"] = Field(
+    # LLM Provider — "groq" рекомендуется (бесплатно + лучше следует инструкциям)
+    llm_provider: Literal["gigachat", "groq", "yandexgpt"] = Field(
         default="gigachat", description="LLM provider to use"
     )
 
@@ -44,13 +44,17 @@ class Settings(BaseSettings):
     yandex_folder_id: Optional[str] = Field(default=None, description="Yandex folder ID")
 
     # ==========================================================================
-    # Speech-to-Text (STT) settings
+    # Groq API — используется И для STT (Whisper), И для LLM (Llama)
     # ==========================================================================
-    
-    # Groq Whisper API (FREE, recommended!)
     groq_api_key: Optional[str] = Field(
         default=None, 
-        description="Groq API key for Whisper STT (FREE tier available)"
+        description="Groq API key — for both Whisper STT and Llama LLM (FREE)"
+    )
+    
+    # Groq LLM model (when llm_provider="groq")
+    groq_llm_model: str = Field(
+        default="llama-3.3-70b-versatile",
+        description="Groq LLM model: llama-3.3-70b-versatile (best), llama-3.1-8b-instant (fast)"
     )
     
     # OpenAI Whisper API ($0.006/min)
@@ -105,17 +109,14 @@ class Settings(BaseSettings):
     
     @property
     def postgres_url(self) -> str:
-        """Get PostgreSQL connection URL for LangGraph."""
         return f"postgresql://{self.postgres_user}:{self.postgres_password}@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
     
     @property
     def async_postgres_url(self) -> str:
-        """Get async PostgreSQL connection URL."""
         return f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
     
     @property
     def db_url(self) -> str:
-        """Get database URL with absolute path."""
         if self.database_url:
             return self.database_url
         return f"sqlite+aiosqlite:///{self.data_dir / 'vitaprod.db'}"
@@ -131,12 +132,12 @@ class Settings(BaseSettings):
         default="vitaprod43@mail.ru", description="Email for escalation"
     )
     
-    # Manager notifications (orders will be sent to both)
+    # Manager notifications
     manager_telegram_id: Optional[int] = Field(
-        default=None, description="Telegram ID of first manager to receive orders"
+        default=None, description="Telegram ID of first manager"
     )
     manager_telegram_id_2: Optional[int] = Field(
-        default=None, description="Telegram ID of second manager to receive orders"
+        default=None, description="Telegram ID of second manager"
     )
 
     # Embeddings
@@ -153,7 +154,7 @@ class Settings(BaseSettings):
         default=0.7, description="Confidence threshold for escalation"
     )
     top_k_results: int = Field(
-        default=5, description="Number of results to retrieve from vector DB"
+        default=10, description="Number of results to retrieve from vector DB"
     )
 
     # Debug
@@ -161,17 +162,14 @@ class Settings(BaseSettings):
 
     @property
     def prices_dir(self) -> Path:
-        """Directory for price list files."""
         return self.data_dir / "prices"
 
     @property
     def sqlite_path(self) -> Path:
-        """Path to SQLite database file."""
         return self.data_dir / "vitaprod.db"
     
     @property
     def manager_ids(self) -> list[int]:
-        """Get list of all manager IDs for notifications."""
         ids = []
         if self.manager_telegram_id:
             ids.append(self.manager_telegram_id)
@@ -181,7 +179,6 @@ class Settings(BaseSettings):
     
     @property
     def has_stt_configured(self) -> bool:
-        """Check if any STT provider is configured."""
         return bool(self.groq_api_key or self.openai_api_key or self.deepgram_api_key)
 
 

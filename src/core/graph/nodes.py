@@ -4,6 +4,7 @@ Each node is a function that takes state and returns updated state.
 """
 
 import logging
+import re
 from typing import Optional
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
@@ -46,7 +47,17 @@ async def retrieve_products(state: ConversationState) -> dict:
         retriever = get_retriever()
         result = await retriever.retrieve(query=context_query)
         
-        logger.info(f"Retrieved {len(result.products)} products for query: {user_query[:50]}")
+        # FIX BUG #5: Подробное логирование найденных товаров
+        logger.info(
+            f"Retrieved {len(result.products)} products for query: '{user_query[:80]}'"
+        )
+        for i, (product, score) in enumerate(zip(result.products, result.scores)):
+            logger.info(
+                f"  [{i+1}] score={score:.3f} | {product.get('name')} | "
+                f"{product.get('product_form')} | "
+                f"price={product.get('price')} | "
+                f"available={product.get('is_available')}"
+            )
         
         return {"current_products": result.products}
     
@@ -85,17 +96,26 @@ async def generate_response(state: ConversationState) -> dict:
         user_query=last_message,
     )
 
+    # FIX BUG #5: Логируем полный промпт для отладки
+    logger.debug(f"=== USER PROMPT ===\n{user_prompt}\n=== END PROMPT ===")
+
     try:
         response = await llm.generate(
             prompt=user_prompt,
             system_prompt=system_prompt,
-            temperature=0.3,
+            temperature=0.05,  # FIX BUG #3: Снижена temperature с 0.3 до 0.05
             max_tokens=512,
         )
         
-        logger.info(f"Generated response for user query")
+        response_text = response.content
         
-        return {"messages": [AIMessage(content=response.content)]}
+        # FIX BUG #4: Валидация ответа — проверяем, что цены совпадают с контекстом
+        response_text = _validate_and_warn(response_text, products)
+        
+        logger.info(f"Generated response for user query: '{last_message[:50]}...'")
+        logger.debug(f"Response: {response_text[:200]}...")
+        
+        return {"messages": [AIMessage(content=response_text)]}
     
     except Exception as e:
         logger.error(f"Generation error: {e}", exc_info=True)
@@ -106,6 +126,43 @@ async def generate_response(state: ConversationState) -> dict:
                 )
             ]
         }
+
+
+def _validate_and_warn(response_text: str, products: list[dict]) -> str:
+    """
+    FIX BUG #4: Проверяет, что цены в ответе LLM совпадают с данными из RAG.
+    Если найдены подозрительные цены — логирует предупреждение.
+    
+    В будущем можно добавить автозамену неверных цен.
+    """
+    if not products:
+        return response_text
+    
+    # Собираем реальные цены из RAG-контекста
+    known_prices = {}
+    for p in products:
+        name = p.get("name", "").lower()
+        price = p.get("price")
+        if name and price:
+            known_prices[name] = price
+    
+    # Ищем цены в ответе LLM (паттерн: число + ₽)
+    price_mentions = re.findall(r'(\d+)\s*₽', response_text)
+    
+    for price_str in price_mentions:
+        price_val = float(price_str)
+        # Проверяем, есть ли такая цена среди реальных
+        real_prices = set(known_prices.values())
+        if real_prices and price_val not in real_prices:
+            # Цена из ответа не совпадает ни с одной реальной
+            logger.warning(
+                f"⚠️ HALLUCINATION DETECTED: LLM mentioned price {price_val}₽, "
+                f"but known prices are: {real_prices}. "
+                f"Response: {response_text[:200]}..."
+            )
+            # Пока только логируем. Для автоматической замены нужна более сложная логика.
+    
+    return response_text
 
 
 def _build_context_query(messages: list, current_query: str) -> str:

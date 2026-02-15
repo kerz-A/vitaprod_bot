@@ -65,18 +65,27 @@ async def transcribe_audio(stt_service, file_path: str, language: str = "ru") ->
         params = sig.parameters
         
         if 'language' in params:
-            return await method(file_path, language=language)
+            result = await method(file_path, language=language)
         elif 'lang' in params:
-            return await method(file_path, lang=language)
+            result = await method(file_path, lang=language)
         else:
             # Call without language parameter
-            return await method(file_path)
+            result = await method(file_path)
     except (ValueError, TypeError):
         # Fallback: try with language, then without
         try:
-            return await method(file_path, language=language)
+            result = await method(file_path, language=language)
         except TypeError:
-            return await method(file_path)
+            result = await method(file_path)
+    
+    # FIX: Handle STTResult objects — extract text string
+    if hasattr(result, 'text'):
+        return result.text
+    elif isinstance(result, str):
+        return result
+    else:
+        logger.warning(f"Unexpected STT result type: {type(result)}, converting to str")
+        return str(result)
 
 
 @router.message(F.voice)

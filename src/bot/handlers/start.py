@@ -2,6 +2,8 @@
 Start command handler.
 """
 
+import logging
+
 from aiogram import Router
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
@@ -9,9 +11,9 @@ from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from src.core.graph import clear_conversation
 
 router = Router(name="start")
+logger = logging.getLogger(__name__)
 
 
-# Клавиатура с основными действиями
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📋 Весь ассортимент")],
@@ -82,32 +84,72 @@ HELP_MESSAGE = """🤖 <b>Как я могу помочь:</b>
 💡 Я запоминаю наш диалог, так что можете уточнять: «а в каком виде?», «а цена?»"""
 
 
+TELEGRAM_MAX_LENGTH = 4096
+
+
+def split_message(text: str, max_length: int = TELEGRAM_MAX_LENGTH) -> list[str]:
+    """Split long message into Telegram-safe chunks by category boundaries."""
+    if len(text) <= max_length:
+        return [text]
+    
+    chunks = []
+    current_chunk = ""
+    
+    blocks = text.split("\n\n")
+    
+    for block in blocks:
+        candidate = current_chunk + ("\n\n" if current_chunk else "") + block
+        
+        if len(candidate) > max_length:
+            if current_chunk:
+                chunks.append(current_chunk)
+            
+            if len(block) > max_length:
+                lines = block.split("\n")
+                current_chunk = ""
+                for line in lines:
+                    line_candidate = current_chunk + ("\n" if current_chunk else "") + line
+                    if len(line_candidate) > max_length:
+                        if current_chunk:
+                            chunks.append(current_chunk)
+                        current_chunk = line
+                    else:
+                        current_chunk = line_candidate
+            else:
+                current_chunk = block
+        else:
+            current_chunk = candidate
+    
+    if current_chunk:
+        chunks.append(current_chunk)
+    
+    return chunks
+
+
 @router.message(CommandStart())
 async def handle_start(message: Message) -> None:
-    """Handle /start command."""
     await message.answer(WELCOME_MESSAGE, reply_markup=main_keyboard)
 
 
 @router.message(Command("help"))
 async def handle_help(message: Message) -> None:
-    """Handle /help command."""
     await message.answer(HELP_MESSAGE, reply_markup=main_keyboard)
 
 
 @router.message(lambda m: m.text in ["📋 Весь ассортимент", "📋 Весь ассортимент в наличии"])
 async def show_catalog(message: Message) -> None:
-    """Show all available products."""
+    """Show all available products grouped by category."""
     from src.db.vector import vector_db
     
     try:
-        # Получаем все товары из Qdrant
         all_points = vector_db.client.scroll(
             collection_name=vector_db.collection_name,
             limit=200,
             with_payload=True,
         )[0]
         
-        # Группируем по категориям и форме
+        logger.info(f"Catalog: fetched {len(all_points)} points from Qdrant")
+        
         categories = {}
         for point in all_points:
             payload = point.payload
@@ -115,7 +157,6 @@ async def show_catalog(message: Message) -> None:
                 category = payload.get("category", "Другое")
                 product_form = payload.get("product_form", "")
                 
-                # Создаём ключ "Категория (форма)"
                 if product_form:
                     group_key = f"{category} ({product_form.lower()})"
                 else:
@@ -128,16 +169,17 @@ async def show_catalog(message: Message) -> None:
                 price = payload.get("price")
                 origin = payload.get("origin_country", "")
                 
-                # Формируем строку товара
                 name_with_origin = f"{name} ({origin})" if origin else name
                 price_str = f"{price:.0f} ₽/кг" if price else "цена уточняется"
                 categories[group_key].append(f"• {name_with_origin} — {price_str}")
+        
+        logger.info(f"Catalog: {len(categories)} categories, "
+                     f"{sum(len(v) for v in categories.values())} available products")
         
         if not categories:
             await message.answer("😔 К сожалению, сейчас нет товаров в наличии.")
             return
         
-        # Формируем сообщение
         response = "📋 <b>Товары в наличии:</b>\n\n"
         for category, products in sorted(categories.items()):
             response += f"<b>{category}:</b>\n"
@@ -146,21 +188,25 @@ async def show_catalog(message: Message) -> None:
         
         response += "💡 <i>Напишите название товара, чтобы узнать подробнее или заказать</i>"
         
-        await message.answer(response)
+        # FIX: Split long messages (Telegram limit 4096 chars)
+        chunks = split_message(response)
+        logger.info(f"Catalog: sending {len(chunks)} message(s), total {len(response)} chars")
+        
+        for chunk in chunks:
+            await message.answer(chunk)
         
     except Exception as e:
+        logger.error(f"Error showing catalog: {e}", exc_info=True)
         await message.answer("😔 Не удалось загрузить каталог. Попробуйте позже.")
 
 
 @router.message(lambda m: m.text == "📞 Связаться с менеджером")
 async def show_contacts(message: Message) -> None:
-    """Show contact information."""
     await message.answer(CONTACT_MESSAGE)
 
 
 @router.message(Command("clear"))
 async def handle_clear(message: Message) -> None:
-    """Clear conversation history."""
     user_id = message.from_user.id
     await clear_conversation(user_id)
     await message.answer(
